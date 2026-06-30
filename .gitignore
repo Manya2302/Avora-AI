@@ -1,0 +1,57 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+*.egg
+build/
+dist/
+
+# SQLite & Databases
+*.sqlite3
+db_qdrant/
+
+# Environment / Secrets (CRITICAL)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+*.env.*
+!*.env.example
+!*.env.local.example
+
+# Media / Static / Uploads
+media/
+staticfiles/
+/backend/media/
+/backend/staticfiles/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# OS / System files
+.DS_Store
+Thumbs.db
+
+# IDE / Text Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swo
+*.swp
+
+# Docker Override
+docker-compose.override.yml

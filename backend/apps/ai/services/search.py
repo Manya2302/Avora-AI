@@ -1,0 +1,99 @@
+"""
+Avora AI — Enhanced Semantic Search Engine
+Supports filters, suggestions, analytics logging.
+"""
+import logging, time
+from django.conf import settings
+from .embeddings import generate_embedding
+logger = logging.getLogger(__name__)
+
+
+def semantic_search(
+    query: str,
+    owner_id: str,
+    top_k: int = 10,
+    filters: dict | None = None,
+    user=None,
+) -> dict:
+    """Full semantic search with filters, timing, and analytics logging."""
+    t0 = time.time()
+    try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from utils.qdrant_client import get_client
+
+        vector  = generate_embedding(query)
+        client  = get_client()
+
+        # Build Qdrant filter
+        must = [FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]
+        if filters:
+            if filters.get('category'):
+                must.append(FieldCondition(key="category", match=MatchValue(value=filters['category'])))
+            if filters.get('confidentiality'):
+                must.append(FieldCondition(key="confidentiality", match=MatchValue(value=filters['confidentiality'])))
+
+        search_method = getattr(client, 'search', None)
+        if search_method is None:
+            search_method = getattr(client, '_client').search
+
+        hits = search_method(
+            collection_name=settings.QDRANT_COLLECTION,
+            query_vector=vector,
+            query_filter=Filter(must=must),
+            limit=top_k,
+            with_payload=True,
+        )
+
+        results = [{
+            'document_id':    r.payload.get('document_id'),
+            'original_name':  r.payload.get('original_name', ''),
+            'category':       r.payload.get('category', ''),
+            'tags':           r.payload.get('tags', []),
+            'short_summary':  r.payload.get('short_summary', ''),
+            'confidentiality':r.payload.get('confidentiality', 'internal'),
+            'score':          round(r.score * 100, 1),
+        } for r in hits]
+
+        elapsed = int((time.time() - t0) * 1000)
+
+        # Log to analytics
+        if user:
+            _log_search(user, query, len(results), elapsed, filters or {})
+
+        return {'results': results, 'count': len(results), 'elapsed_ms': elapsed, 'query': query}
+
+    except Exception as e:
+        logger.exception(f"[Avora Search] Error:")
+        return {'results': [], 'count': 0, 'elapsed_ms': 0, 'query': query}
+
+
+def get_search_suggestions(partial: str, owner_id: str) -> list:
+    """Return query suggestions based on search history + popular terms."""
+    try:
+        from apps.ai.models import SearchHistory, SearchAnalytics
+        # From user history
+        history = SearchHistory.objects.filter(
+            query__icontains=partial
+        ).values_list('query', flat=True).distinct()[:5]
+        # From popular
+        popular = SearchAnalytics.objects.filter(
+            query__icontains=partial
+        ).order_by('-search_count').values_list('query', flat=True)[:5]
+        return list(dict.fromkeys(list(history) + list(popular)))[:8]
+    except Exception:
+        return []
+
+
+def _log_search(user, query: str, result_count: int, elapsed_ms: int, filters: dict):
+    try:
+        from apps.ai.models import SearchHistory, SearchAnalytics
+        SearchHistory.objects.create(
+            user=user, query=query, result_count=result_count,
+            search_ms=elapsed_ms, filters=filters,
+        )
+        obj, _ = SearchAnalytics.objects.get_or_create(query=query)
+        obj.search_count += 1
+        obj.avg_results  = (obj.avg_results * (obj.search_count - 1) + result_count) / obj.search_count
+        obj.save(update_fields=['search_count', 'avg_results', 'last_searched'])
+    except Exception as e:
+        logger.debug(f"[Avora Search] Analytics log error: {e}")

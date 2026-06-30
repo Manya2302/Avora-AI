@@ -1,0 +1,2 @@
+import SettingsPage from '@/components/auth/SettingsPage'
+export default function Page() { return <SettingsPage /> }
