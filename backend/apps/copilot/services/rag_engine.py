@@ -30,11 +30,8 @@ class AvoraRAGEngine:
         # 1 — Multi-Query Expansion
         queries = self._expand_query_multi(question, conversation_history or [])
 
-        # 2 — Retrieve documents for all query variations
-        docs = self._retrieve_documents_multi(queries, owner_id)
-
-        # 3 — Chunk retrieved documents
-        chunks = self._chunk_documents(docs)
+        # 2 & 3 — Retrieve chunks for all query variations directly from Qdrant
+        chunks = self._retrieve_chunks_multi(queries, owner_id)
 
         # 4 — Rerank chunks with Cohere Rerank
         top_chunks, refs = self._rerank_chunks(chunks, question)
@@ -59,14 +56,14 @@ class AvoraRAGEngine:
             "sources":        refs,
             "sources_count":  len(refs),
             "latency_ms":     elapsed,
-            "docs_retrieved": len(docs),
+            "docs_retrieved": len(set(c["document_id"] for c in chunks)),
             "hallucination_flags": flags,
             "query_expanded": ", ".join(queries),
         }
 
     def _expand_query_multi(self, question: str, history: list) -> list:
         """Expand user query into multiple variations using LLM to capture diverse wording."""
-        groq_key = os.getenv("GROQ_API_KEY")
+        groq_key = getattr(settings, "GROQ_API_KEY", os.getenv("GROQ_API_KEY"))
         if not groq_key:
             # Simple fallback expansions
             return [
@@ -121,117 +118,49 @@ class AvoraRAGEngine:
             logger.warning(f"[RAG] Groq query expansion failed: {e}")
             return [question, f"{question} summary", f"{question} details"]
 
-    def _retrieve_documents_multi(self, queries: list, owner_id: str) -> list:
-        """Search Qdrant for all query variations, combine and deduplicate results."""
+    def _retrieve_chunks_multi(self, queries: list, owner_id: str) -> list:
+        """Search Qdrant for all query variations, combine and deduplicate chunk results."""
         try:
             from apps.ai.services.embeddings import generate_embedding
             from qdrant_client.models import Filter, FieldCondition, MatchValue
             from utils.qdrant_client import get_client
 
             client = get_client()
-            search_method = getattr(client, 'search', None)
-            if search_method is None:
-                search_method = getattr(client, '_client').search
 
-            retrieved_docs = {}
+            retrieved_chunks = {}
             for q in queries:
                 try:
-                    vector = generate_embedding(q)
-                    hits = search_method(
+                    vector = generate_embedding(q, is_query=True)
+                    res = client.query_points(
                         collection_name=settings.QDRANT_COLLECTION,
-                        query_vector=vector,
+                        query=vector,
                         query_filter=Filter(must=[FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]),
-                        limit=5,
+                        limit=12,
                         with_payload=True,
                         score_threshold=CONFIDENCE_THRESHOLD,
                     )
+                    hits = res.points
                     for h in hits:
+                        chunk_id = str(h.id)
                         doc_id = h.payload.get("document_id")
                         if not doc_id:
                             continue
-                        # Keep high score if duplicate
-                        if doc_id not in retrieved_docs or h.score > retrieved_docs[doc_id]["score"]:
-                            retrieved_docs[doc_id] = {
+                        if chunk_id not in retrieved_chunks or h.score > retrieved_chunks[chunk_id]["score"]:
+                            retrieved_chunks[chunk_id] = {
+                                "chunk_id":       chunk_id,
                                 "document_id":    doc_id,
                                 "original_name":  h.payload.get("original_name", ""),
                                 "category":       h.payload.get("category", ""),
-                                "short_summary":  h.payload.get("short_summary", ""),
+                                "text":           h.payload.get("chunk_text", h.payload.get("short_summary", "")),
                                 "score":          h.score,
-                                "tags":           h.payload.get("tags", []),
                             }
                 except Exception as query_err:
                     logger.warning(f"[RAG] Single query search error for '{q}': {query_err}")
 
-            return list(retrieved_docs.values())
+            return list(retrieved_chunks.values())
         except Exception as e:
             logger.error(f"[RAG] Multi-retrieval error: {e}")
             return []
-
-    def _chunk_documents(self, docs: list) -> list:
-        """Fetch OCR text for retrieved docs and split them into logical layout-preserving paragraphs."""
-        chunks = []
-        for doc in docs[:6]:  # Process top 6 documents
-            doc_id = doc.get("document_id")
-            text = self._get_doc_text(doc_id)
-            if not text:
-                continue
-
-            # Split text by double newlines to keep paragraph structure intact
-            # Falls back to single newlines if paragraphs are missing
-            raw_paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-            if not raw_paras:
-                raw_paras = [p.strip() for p in text.split("\n") if p.strip()]
-
-            # Consolidate very short lines into logical chunks of ~500-1200 characters
-            current_chunk = []
-            current_len = 0
-            for para in raw_paras:
-                # If paragraph itself is too large, split it by sentences
-                if len(para) > 1500:
-                    sentences = re.split(r'(?<=[.!?])\s+', para)
-                    for s in sentences:
-                        if current_len + len(s) > 1000 and current_chunk:
-                            chunks.append({
-                                "document_id":   doc_id,
-                                "original_name": doc.get("original_name", ""),
-                                "category":      doc.get("category", ""),
-                                "text":          "\n".join(current_chunk)
-                            })
-                            current_chunk = []
-                            current_len = 0
-                        current_chunk.append(s)
-                        current_len += len(s)
-                else:
-                    if current_len + len(para) > 1200 and current_chunk:
-                        chunks.append({
-                            "document_id":   doc_id,
-                            "original_name": doc.get("original_name", ""),
-                            "category":      doc.get("category", ""),
-                            "text":          "\n".join(current_chunk)
-                        })
-                        current_chunk = []
-                        current_len = 0
-                    current_chunk.append(para)
-                    current_len += len(para)
-
-            if current_chunk:
-                chunks.append({
-                    "document_id":   doc_id,
-                    "original_name": doc.get("original_name", ""),
-                    "category":      doc.get("category", ""),
-                    "text":          "\n".join(current_chunk)
-                })
-
-        return chunks
-
-    def _get_doc_text(self, document_id) -> str:
-        """Get extracted text from OCR store."""
-        try:
-            from apps.ai.models import DocumentOCR
-            ocr = DocumentOCR.objects.get(document_id=document_id, status="completed")
-            return ocr.cleaned_text or ocr.raw_text
-        except Exception:
-            return ""
 
     def _rerank_chunks(self, chunks: list, query: str) -> tuple[list, list]:
         """Rank chunks using Cohere Rerank API to find the most relevant paragraphs."""
@@ -342,7 +271,7 @@ class AvoraRAGEngine:
         )
 
         thinking = f"Query: {question}\nContext Length: {len(context)} chars\nMode: {mode}"
-        groq_key = os.getenv("GROQ_API_KEY")
+        groq_key = getattr(settings, "GROQ_API_KEY", os.getenv("GROQ_API_KEY"))
 
         if groq_key:
             try:

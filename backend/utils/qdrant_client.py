@@ -6,10 +6,8 @@ _client = None
 def get_client() -> QdrantClient:
     global _client
     if _client is None:
-        import os
-        if getattr(settings, 'USE_LOCAL_QDRANT', True):
-            path = os.path.join(settings.BASE_DIR, "db_qdrant")
-            _client = QdrantClient(path=path)
+        if getattr(settings, 'QDRANT_URL', None) and getattr(settings, 'QDRANT_API_KEY', None):
+            _client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY, timeout=60)
         else:
             _client = QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
     return _client

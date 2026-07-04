@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Download, Share2, Trash2, ArrowLeft, Sparkles, Lock } from 'lucide-react'
 import { useDocument } from '@/hooks/useDocuments'
+import { documentsApi } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
 import Button from '@/components/shared/Button'
@@ -12,6 +13,16 @@ export default function DocumentDetailPage({ id }: { id: string }) {
   const router = useRouter()
   const { doc, loading } = useDocument(id)
   const [activeTab, setActiveTab] = useState<'preview' | 'ocr'>('preview')
+
+  const handleDelete = async () => {
+    if (!confirm('Are you sure you want to permanently delete this document?')) return;
+    try {
+      await documentsApi.delete(id);
+      router.push('/documents');
+    } catch (e) {
+      alert('Failed to delete document');
+    }
+  }
 
   if (loading) return <div className="flex items-center justify-center h-64 text-sm text-[#9B9890]">Loading document…</div>
   if (!doc)    return <div className="flex items-center justify-center h-64 text-sm text-[#9B9890]">Document not found.</div>
@@ -46,7 +57,7 @@ export default function DocumentDetailPage({ id }: { id: string }) {
               <div className="flex gap-2">
                 <Button variant="dark" size="sm" className="gap-1.5"><Download className="w-3 h-3" /> Download</Button>
                 <Button variant="ghost" size="sm" className="gap-1.5"><Share2 className="w-3 h-3" /> Share</Button>
-                <Button variant="red" size="sm"><Trash2 className="w-3 h-3" /></Button>
+                <Button variant="red" size="sm" onClick={handleDelete}><Trash2 className="w-3 h-3" /></Button>
               </div>
             </div>
             {activeTab === 'preview' ? (

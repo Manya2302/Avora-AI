@@ -163,13 +163,19 @@ USE_MOCK_STORAGE = config('USE_MOCK_STORAGE', default=True, cast=bool)
 QDRANT_HOST = config('QDRANT_HOST', default='localhost')
 QDRANT_PORT = config('QDRANT_PORT', default=6333, cast=int)
 QDRANT_COLLECTION = config('QDRANT_COLLECTION', default='securevault_documents')
-QDRANT_VECTOR_SIZE = 768  # nomic-embed-text output size
-USE_LOCAL_QDRANT = config('USE_LOCAL_QDRANT', default=True, cast=bool)
+QDRANT_VECTOR_SIZE = 1024  # Cohere embed-english-v3.0 size
+QDRANT_URL = config('QDRANT_URL', default=None)
+QDRANT_API_KEY = config('QDRANT_API_KEY', default=None)
 
 # ── Ollama (Orivo AI) ─────────────────────────────────────────
 OLLAMA_HOST = config('OLLAMA_HOST', default='http://localhost:11434')
 OLLAMA_EMBED_MODEL = config('OLLAMA_EMBED_MODEL', default='nomic-embed-text')
 OLLAMA_CHAT_MODEL = config('OLLAMA_CHAT_MODEL', default='llama3.2:1b')
+
+# ── API Keys ──────────────────────────────────────────────────
+GROQ_API_KEY = config('GROQ_API_KEY', default=None)
+GEMINI_API_KEY = config('GEMINI_API_KEY', default=None)
+COHERE_API_KEY = config('COHERE_API_KEY', default=None)
 
 # ── Encryption Config ─────────────────────────────────────────
 RSA_KEY_SIZE = config('RSA_KEY_SIZE', default=4096, cast=int)

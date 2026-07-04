@@ -73,10 +73,10 @@ export default function Sidebar() {
       <div className="p-2.5 border-t border-white/5">
         <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-[7px] hover:bg-white/4 cursor-pointer">
           <div className="w-7 h-7 rounded-full bg-[#1A3DAF] flex items-center justify-center text-white font-display font-bold text-[11px]">
-            {user ? getInitials(user.full_name) : '?'}
+            {user ? getInitials(user.full_name || user.email) : '?'}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[12.5px] font-medium text-white/75 truncate">{user?.full_name||'Loading…'}</div>
+            <div className="text-[12.5px] font-medium text-white/75 truncate">{user?.full_name || user?.email || 'Loading…'}</div>
             <div className="font-mono text-[9px] text-white/28 capitalize">{user?.profile?.plan||'free'} · P4</div>
           </div>
           <button onClick={logout} className="text-white/20 hover:text-red-400 transition-colors p-0.5"><LogOut className="w-3.5 h-3.5"/></button>

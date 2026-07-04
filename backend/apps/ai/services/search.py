@@ -21,7 +21,7 @@ def semantic_search(
         from qdrant_client.models import Filter, FieldCondition, MatchValue
         from utils.qdrant_client import get_client
 
-        vector  = generate_embedding(query)
+        vector  = generate_embedding(query, is_query=True)
         client  = get_client()
 
         # Build Qdrant filter
@@ -32,27 +32,34 @@ def semantic_search(
             if filters.get('confidentiality'):
                 must.append(FieldCondition(key="confidentiality", match=MatchValue(value=filters['confidentiality'])))
 
-        search_method = getattr(client, 'search', None)
-        if search_method is None:
-            search_method = getattr(client, '_client').search
-
-        hits = search_method(
+        res = client.query_points(
             collection_name=settings.QDRANT_COLLECTION,
-            query_vector=vector,
+            query=vector,
             query_filter=Filter(must=must),
             limit=top_k,
             with_payload=True,
         )
+        hits = res.points
 
-        results = [{
-            'document_id':    r.payload.get('document_id'),
-            'original_name':  r.payload.get('original_name', ''),
-            'category':       r.payload.get('category', ''),
-            'tags':           r.payload.get('tags', []),
-            'short_summary':  r.payload.get('short_summary', ''),
-            'confidentiality':r.payload.get('confidentiality', 'internal'),
-            'score':          round(r.score * 100, 1),
-        } for r in hits]
+        unique_docs = {}
+        for r in hits:
+            doc_id = r.payload.get('document_id')
+            if not doc_id: continue
+            if doc_id not in unique_docs or r.score > unique_docs[doc_id]['score_raw']:
+                unique_docs[doc_id] = {
+                    'document_id':    doc_id,
+                    'original_name':  r.payload.get('original_name', ''),
+                    'category':       r.payload.get('category', ''),
+                    'tags':           r.payload.get('tags', []),
+                    'short_summary':  r.payload.get('chunk_text', r.payload.get('short_summary', ''))[:150].strip() + '...',
+                    'confidentiality':r.payload.get('confidentiality', 'internal'),
+                    'score_raw':      r.score,
+                    'score':          round(r.score * 100, 1),
+                }
+
+        results = sorted(unique_docs.values(), key=lambda x: -x['score_raw'])[:top_k]
+        for r in results:
+            r.pop('score_raw', None)
 
         elapsed = int((time.time() - t0) * 1000)
 

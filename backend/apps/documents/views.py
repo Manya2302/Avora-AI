@@ -143,12 +143,8 @@ class UploadChunkView(APIView):
                 s=models.Sum('chunk_size'))['s'] or 0
             document.encrypted_size = document.compressed_size
             document.save()
-            import threading
-            threading.Thread(
-                target=process_document_ai.run,
-                args=(str(document.id),),
-                daemon=True
-            ).start()
+            # Execute Celery task (will run synchronously if CELERY_TASK_ALWAYS_EAGER=True)
+            process_document_ai.delay(str(document.id))
 
         return Response({'chunk_index': d['chunk_index'], 'status': 'uploaded',
                          'uploaded': uploaded_count, 'total': document.total_chunks})
@@ -172,12 +168,26 @@ class DocumentViewSet(ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         document = self.get_object()
-        document.is_deleted = True
-        document.deleted_at = timezone.now()
-        document.save()
-        AuditLog.log(request, 'delete', document_id=str(document.id),
-                     resource=document.original_name)
-        return Response({'message': 'Document deleted.'}, status=204)
+        doc_id_str = str(document.id)
+        
+        # Log before hard delete
+        AuditLog.log(request, 'delete', document_id=doc_id_str, resource=document.original_name)
+        
+        # Attempt to remove vectors from Qdrant Cloud
+        try:
+            from utils.qdrant_client import get_client
+            from django.conf import settings
+            client = get_client()
+            client.delete(
+                collection_name=settings.QDRANT_COLLECTION,
+                points_selector=[doc_id_str]
+            )
+        except Exception:
+            pass
+            
+        # Hard delete from local relational DB
+        document.delete()
+        return Response({'message': 'Document permanently deleted.'}, status=204)
 
     @action(detail=True, methods=['get'])
     def download_url(self, request, pk=None):
