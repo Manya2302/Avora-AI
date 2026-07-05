@@ -56,35 +56,66 @@ PRIORITY_WEIGHTS = {"critical":40,"high":25,"medium":15,"low":5}
 STATUS_SCORES    = {"compliant":100,"expiring_soon":65,"needs_review":50,"expired":10,"missing":0}
 
 def compute_compliance_score(owner, industry: str) -> dict:
-    from apps.compliance.models import ComplianceProfile, MissingDocument
+    from apps.compliance.models import ComplianceProfile, ComplianceRisk
     from apps.ai.models import DocumentClassification
     from apps.documents.models import Document
 
-    reqs = INDUSTRY_REQUIREMENTS.get(industry, INDUSTRY_REQUIREMENTS["other"])
     user_docs = Document.objects.filter(owner=owner, is_deleted=False, status="ai_ready")
-    classified = {str(c.document_id): c.category for c in
-                  DocumentClassification.objects.filter(document_id__in=user_docs.values_list("id",flat=True))}
+    total_docs = user_docs.count()
+    
+    # Fetch all dynamic AI risks
+    all_risks = ComplianceRisk.objects.filter(owner=owner)
+    
+    critical_risks = all_risks.filter(severity="critical").count()
+    high_risks = all_risks.filter(severity="high").count()
+    medium_risks = all_risks.filter(severity="medium").count()
+    low_risks = all_risks.filter(severity="low").count()
+    
+    total_risks = all_risks.count()
 
-    total_weight = earned_weight = 0
+    # Dynamic Scoring Logic
+    # Start at 100, subtract points for each risk
+    penalty = (critical_risks * 15) + (high_risks * 10) + (medium_risks * 5) + (low_risks * 2)
+    compliance_score = max(0, 100 - penalty)
+    
+    # Audit Readiness: 100% minus critical risks penalty (heavy)
+    audit_readiness_pct = max(0, 100 - (critical_risks * 25) - (high_risks * 5))
+    
+    # Missing docs can be represented as documents that have critical risks
+    docs_with_critical_risks = Document.objects.filter(id__in=all_risks.filter(severity="critical").values_list('document_id', flat=True))
     missing_list = []
+    for doc in docs_with_critical_risks:
+        missing_list.append({
+            "name": doc.original_name,
+            "priority": "critical",
+            "doc_type": "requires_remediation"
+        })
+        
+    docs_with_high_risks = Document.objects.filter(id__in=all_risks.filter(severity="high").values_list('document_id', flat=True)).exclude(id__in=docs_with_critical_risks.values_list('id', flat=True))
+    for doc in docs_with_high_risks:
+        missing_list.append({
+            "name": doc.original_name,
+            "priority": "high",
+            "doc_type": "requires_attention"
+        })
+
+    # Dummy checks list for UI backwards compatibility but using dynamic data
     checks = []
-
-    for req in reqs:
-        weight   = PRIORITY_WEIGHTS.get(req["priority"], 10)
-        total_weight += weight
-        matched  = any(cat == req["doc_type"] for cat in classified.values())
-        status   = "compliant" if matched else "missing"
-        score_pct= STATUS_SCORES[status]
-        earned_weight += weight * (score_pct / 100)
-        checks.append({"name":req["name"],"status":status,"priority":req["priority"],
-                       "doc_type":req["doc_type"],"score":score_pct})
-        if not matched:
-            missing_list.append({"name":req["name"],"priority":req["priority"],"doc_type":req["doc_type"]})
-
-    compliance_score    = round((earned_weight / total_weight) * 100, 1) if total_weight else 0
-    critical_missing    = len([m for m in missing_list if m["priority"]=="critical"])
-    total_critical      = len([r for r in reqs if r["priority"]=="critical"])
-    audit_readiness_pct = round((1 - critical_missing / max(1,total_critical)) * 100, 1)
+    if total_docs == 0:
+        checks.append({"name": "Upload any document to begin", "status": "missing", "priority": "high", "doc_type": "general", "score": 0})
+    else:
+        for risk in all_risks:
+            checks.append({
+                "name": risk.compliance_standard + " - " + risk.risk_type,
+                "status": "needs_review",
+                "priority": risk.severity,
+                "doc_type": "ai_finding",
+                "score": 0
+            })
+            
+    # Add a pseudo "Compliant" check if score is high
+    if compliance_score >= 80:
+        checks.append({"name": "General Compliance Posture", "status": "compliant", "priority": "low", "doc_type": "general", "score": 100})
 
     try:
         profile, _ = ComplianceProfile.objects.get_or_create(owner=owner, defaults={"industry":industry})
@@ -92,21 +123,18 @@ def compute_compliance_score(owner, industry: str) -> dict:
         profile.audit_readiness_pct = audit_readiness_pct
         profile.last_scored_at      = timezone.now()
         profile.save()
-        # Sync missing documents
-        MissingDocument.objects.filter(owner=owner, is_resolved=False).delete()
-        for m in missing_list:
-            MissingDocument.objects.create(owner=owner, name=m["name"],
-                priority=m["priority"], doc_type=m["doc_type"],
-                description=f"Required {m['doc_type'].replace('_',' ')} not found in vault.",
-                suggested_action=f"Upload your {m['name']} to improve compliance score.")
     except Exception as e:
         logger.error(f"[Score] {e}")
 
     return {
-        "score": compliance_score, "audit_readiness": audit_readiness_pct,
-        "total_checks": len(reqs), "compliant": len([c for c in checks if c["status"]=="compliant"]),
-        "missing_count": len(missing_list), "critical_missing": critical_missing,
-        "checks": checks, "missing": missing_list,
+        "score": compliance_score, 
+        "audit_readiness": audit_readiness_pct,
+        "total_checks": total_risks if total_risks > 0 else 1, 
+        "compliant": 1 if compliance_score >= 80 else 0,
+        "missing_count": len(missing_list), 
+        "critical_missing": critical_risks,
+        "checks": checks, 
+        "missing": missing_list,
         "grade": _grade(compliance_score),
         "recommendation": _recommend(compliance_score, missing_list),
     }
@@ -119,5 +147,5 @@ def _recommend(score, missing):
     critical = [m for m in missing if m["priority"]=="critical"]
     if critical:
         names = ", ".join(m["name"] for m in critical[:3])
-        return f"Upload {len(critical)} critical documents immediately: {names}."
-    return f"Good progress. Upload {len(missing)} remaining documents to improve your score."
+        return f"Remediate {len(critical)} critical documents immediately: {names}."
+    return f"Good progress. Resolve {len(missing)} remaining AI findings to improve your score."

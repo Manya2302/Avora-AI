@@ -94,3 +94,32 @@ class DocumentShare(models.Model):
 
     class Meta:
         db_table = 'document_shares'
+
+class DocumentVersion(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='history_versions')
+    version_number = models.IntegerField()
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    raw_text = models.TextField(blank=True) # Full text of this version for diffing
+    storage_key = models.CharField(max_length=500, blank=True) # Storage key for binary file
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'document_versions'
+        ordering = ['-version_number']
+
+class DocumentChangeLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='change_logs')
+    from_version = models.ForeignKey(DocumentVersion, on_delete=models.CASCADE, related_name='changes_from')
+    to_version = models.ForeignKey(DocumentVersion, on_delete=models.CASCADE, related_name='changes_to')
+    
+    ai_summary = models.TextField(blank=True, help_text="What changed")
+    ai_risk = models.TextField(blank=True, help_text="Risk introduced")
+    ai_compliance = models.TextField(blank=True, help_text="Compliance impact")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'document_change_logs'
+        ordering = ['-created_at']

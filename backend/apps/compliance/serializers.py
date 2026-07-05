@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ComplianceProfile, MissingDocument, ExpiryAlert, AuditPackage, ComplianceCopilotChat, ComplianceTimeline
+from .models import ComplianceProfile, MissingDocument, ExpiryAlert, AuditPackage, ComplianceCopilotChat, ComplianceTimeline, ComplianceRisk
 
 class ComplianceProfileSerializer(serializers.ModelSerializer):
     grade = serializers.SerializerMethodField()
@@ -38,5 +38,12 @@ class CopilotChatSerializer(serializers.ModelSerializer):
 class ComplianceTimelineSerializer(serializers.ModelSerializer):
     class Meta:
         model = ComplianceTimeline
+        fields = "__all__"
+        fields = "__all__"
+        read_only_fields = ["owner","created_at"]
+
+class ComplianceRiskSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ComplianceRisk
         fields = "__all__"
         read_only_fields = ["owner","created_at"]

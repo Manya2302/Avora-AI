@@ -16,8 +16,15 @@ class ComplianceDashboardView(APIView):
         expiry_count = ExpiryAlert.objects.filter(owner=request.user, is_dismissed=False).count()
         missing_cnt  = MissingDocument.objects.filter(owner=request.user, is_resolved=False).count()
         timeline     = ComplianceTimeline.objects.filter(owner=request.user, is_completed=False).order_by("due_date")[:5]
+        
+        from .models import ComplianceRisk
+        from .serializers import ComplianceRiskSerializer
+        risks = ComplianceRisk.objects.filter(owner=request.user).order_by('-created_at')[:50]
+        
         return Response({**score_data, "expiry_alerts": expiry_count, "missing_docs": missing_cnt,
-                         "upcoming_events": ComplianceTimelineSerializer(timeline, many=True).data, "industry": industry})
+                         "upcoming_events": ComplianceTimelineSerializer(timeline, many=True).data, 
+                         "recent_risks": ComplianceRiskSerializer(risks, many=True).data,
+                         "industry": industry})
 
 class RunComplianceScanView(APIView):
     def post(self, request):

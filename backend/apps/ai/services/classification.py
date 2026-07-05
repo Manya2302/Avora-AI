@@ -58,6 +58,48 @@ def _score_categories(text: str) -> tuple[str, float]:
         scores[cat] = sum(1 for kw in keywords if kw in text) / len(keywords)
     best = max(scores, key=scores.get)
     best_score = scores[best]
+    
+    # Try LLM Classification for Enterprise Hybrid Approach
+    llm_cat = None
+    llm_conf = 0.0
+    try:
+        import requests, os, json
+        from django.conf import settings
+        groq_key = getattr(settings, "GROQ_API_KEY", os.getenv("GROQ_API_KEY"))
+        if groq_key:
+            prompt = '''Classify this document into one of the following:
+- contract
+- invoice
+- resume
+- policy
+- medical_record
+- research_paper
+- financial_statement
+- legal_notice
+- other
+
+Return only JSON: {"type": "contract", "confidence": 0.99}'''
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": text[:4000]}],
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"}
+                },
+                timeout=5
+            )
+            if resp.status_code == 200:
+                data = json.loads(resp.json()['choices'][0]['message']['content'])
+                llm_cat = data.get("type", "").lower().replace(" ", "_")
+                llm_conf = float(data.get("confidence", 0.0))
+    except Exception as e:
+        logger.warning(f"[Avora Classify] LLM failed: {e}")
+
+    if llm_cat and llm_conf > 0.8:
+        return llm_cat, llm_conf
+
     if best_score == 0:
         return 'other', 0.5
     normalised = min(0.55 + best_score * 2.5, 0.99)

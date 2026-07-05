@@ -105,3 +105,29 @@ class ComplianceTimeline(models.Model):
     class Meta:
         db_table = "compliance_timeline"
         ordering = ["due_date"]
+
+class ComplianceRisk(models.Model):
+    class RiskLevel(models.TextChoices):
+        CRITICAL = "critical", "Critical"
+        HIGH     = "high",     "High"
+        MEDIUM   = "medium",   "Medium"
+        LOW      = "low",      "Low"
+        
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="compliance_risks")
+    document_id = models.UUIDField(db_index=True)
+    doc_name = models.CharField(max_length=500)
+    
+    compliance_standard = models.CharField(max_length=100, help_text="e.g., GDPR, SOC 2, ISO 27001, General")
+    risk_type = models.CharField(max_length=100, help_text="e.g., Missing Clause, Data Violation, Missing Signature")
+    severity = models.CharField(max_length=20, choices=RiskLevel.choices, default=RiskLevel.MEDIUM)
+    
+    description = models.TextField()
+    suggested_fix = models.TextField()
+    
+    is_resolved = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = "compliance_risks"
+        ordering = ["-created_at"]

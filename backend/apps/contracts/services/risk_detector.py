@@ -25,6 +25,21 @@ def detect_risks(contract, text) -> list:
                 defaults={"description":f"Detected: {rule['title']}","severity":rule["severity"],
                           "category":rule["cat"],"recommendation":rule["rec"]})
             if new: created.append({"title":rule["title"],"severity":rule["severity"]})
+            
+    # Integrate AI Compliance Risks directly into Contract Risks for a dynamic dashboard
+    from apps.compliance.models import ComplianceRisk
+    ai_risks = ComplianceRisk.objects.filter(document_id=str(contract.document_id))
+    for risk in ai_risks:
+        r, new = ContractRisk.objects.get_or_create(
+            contract=contract, title=risk.compliance_standard + " Risk",
+            defaults={
+                "description": risk.description,
+                "severity": risk.severity,
+                "category": "Compliance",
+                "recommendation": risk.suggested_fix
+            }
+        )
+        if new: created.append({"title": risk.compliance_standard + " Risk", "severity": risk.severity})
     sevs = list(ContractRisk.objects.filter(contract=contract).values_list("severity",flat=True))
     overall = ("critical" if "critical" in sevs else "high" if "high" in sevs else "medium" if "medium" in sevs else "low")
     ContractAnalysis.objects.filter(pk=contract.pk).update(

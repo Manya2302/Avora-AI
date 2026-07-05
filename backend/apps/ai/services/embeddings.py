@@ -3,6 +3,7 @@ import logging, requests, uuid, os
 from django.conf import settings
 logger = logging.getLogger(__name__)
 
+_fallback_logged_embed = False
 
 def generate_local_fallback_embedding(text: str) -> list:
     import hashlib
@@ -43,11 +44,14 @@ def generate_local_fallback_embedding(text: str) -> list:
 
 
 def generate_embedding(text: str, is_query: bool = False) -> list:
+    global _fallback_logged_embed
     if not text.strip():
         return [0.0] * getattr(settings, 'QDRANT_VECTOR_SIZE', 1024)
         
+    from utils.circuit_breaker import cohere_embed_cb
     cohere_key = getattr(settings, 'COHERE_API_KEY', None) or os.getenv('COHERE_API_KEY')
-    if cohere_key:
+    
+    if cohere_key and cohere_embed_cb.is_healthy():
         try:
             resp = requests.post(
                 "https://api.cohere.ai/v1/embed",
@@ -60,24 +64,41 @@ def generate_embedding(text: str, is_query: bool = False) -> list:
                 timeout=15
             )
             if resp.status_code == 200:
+                cohere_embed_cb.record_success()
                 return resp.json()['embeddings'][0]
+            elif resp.status_code == 429:
+                logger.warning("Cohere rate limit reached.")
+                cohere_embed_cb.record_failure()
+            else:
+                logger.error(f"Cohere embed error: {resp.status_code}")
+                cohere_embed_cb.record_failure()
+        except requests.exceptions.Timeout:
+            logger.error("Cohere embed timeout.")
+            cohere_embed_cb.record_failure()
         except Exception as e:
             logger.error(f"Cohere embed error: {e}")
+            cohere_embed_cb.record_failure()
 
+    if not _fallback_logged_embed:
+        logger.info("Embedding:\nFallback → nomic-embed-text")
+        _fallback_logged_embed = True
+
+    fallback_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    host = os.getenv("OLLAMA_HOST", getattr(settings, "OLLAMA_HOST", "http://localhost:11434"))
     try:
         resp = requests.post(
-            f"{settings.OLLAMA_HOST}/api/embeddings",
-            json={"model": settings.OLLAMA_EMBED_MODEL, "prompt": text[:3072]},
+            f"{host}/api/embeddings",
+            json={"model": fallback_model, "prompt": text[:3072]},
             timeout=30,
         )
         resp.raise_for_status()
         return resp.json().get('embedding', [0.0] * getattr(settings, 'QDRANT_VECTOR_SIZE', 1024))
     except Exception as e:
-        logger.warning(f"[Avora Embed] Ollama error, using local fallback: {e}")
+        logger.warning(f"[Avora Embed] Ollama error, using local math fallback: {e}")
         return generate_local_fallback_embedding(text)
 
 
-def chunk_text(text: str, max_chars: int = 3000, overlap: int = 300) -> list:
+def chunk_text(text: str, max_chars: int = 2000, overlap: int = 200) -> list:
     paras = [p.strip() for p in text.split('\n') if p.strip()]
     chunks = []
     current_chunk = ""
@@ -95,11 +116,16 @@ def chunk_text(text: str, max_chars: int = 3000, overlap: int = 300) -> list:
     return chunks
 
 def generate_embeddings_batch(texts: list) -> list:
+    from utils.circuit_breaker import cohere_embed_cb
+    global _fallback_logged_embed
+    
     if not texts: return []
     cohere_key = getattr(settings, 'COHERE_API_KEY', None) or os.getenv('COHERE_API_KEY')
-    if cohere_key:
+    
+    if cohere_key and cohere_embed_cb.is_healthy():
         try:
             all_embeddings = []
+            failed_batch = False
             for i in range(0, len(texts), 90):
                 batch = texts[i:i+90]
                 resp = requests.post(
@@ -113,13 +139,31 @@ def generate_embeddings_batch(texts: list) -> list:
                     timeout=30
                 )
                 if resp.status_code == 200:
+                    cohere_embed_cb.record_success()
                     all_embeddings.extend(resp.json()['embeddings'])
+                elif resp.status_code == 429:
+                    logger.warning("Cohere rate limit reached (batch).")
+                    cohere_embed_cb.record_failure()
+                    failed_batch = True
+                    break
                 else:
                     logger.error(f"Cohere batch error: {resp.text}")
-                    all_embeddings.extend([[0.0] * getattr(settings, 'QDRANT_VECTOR_SIZE', 1024)] * len(batch))
-            return all_embeddings
+                    cohere_embed_cb.record_failure()
+                    failed_batch = True
+                    break
+            
+            if not failed_batch:
+                return all_embeddings
+        except requests.exceptions.Timeout:
+            logger.error("Cohere embed timeout (batch).")
+            cohere_embed_cb.record_failure()
         except Exception as e:
             logger.error(f"Cohere embed batch error: {e}")
+            cohere_embed_cb.record_failure()
+            
+    if not _fallback_logged_embed:
+        logger.info("Embedding:\nFallback → nomic-embed-text")
+        _fallback_logged_embed = True
             
     return [generate_embedding(t) for t in texts]
 

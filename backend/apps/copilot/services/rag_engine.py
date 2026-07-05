@@ -164,83 +164,117 @@ class AvoraRAGEngine:
 
     def _rerank_chunks(self, chunks: list, query: str) -> tuple[list, list]:
         """Rank chunks using Cohere Rerank API to find the most relevant paragraphs."""
+        if len(chunks) <= 2:
+            return chunks, [{
+                "document_id": str(c["document_id"]),
+                "document_name": c.get("original_name", ""),
+                "relevance": c.get("score", 0.5),
+                "excerpt": c["text"][:300],
+                "category": c.get("category", "")
+            } for c in chunks]
+
         cohere_key = os.getenv("COHERE_API_KEY")
-        if not cohere_key or not chunks:
-            # Fallback: simple token overlap scoring
-            scored_chunks = []
-            q_words = set(w for w in query.lower().split() if len(w) > 2)
-            for c in chunks:
-                c_words = set(w for w in c["text"].lower().split() if len(w) > 2)
-                score = len(q_words & c_words) / max(1, len(q_words))
-                c["relevance_score"] = score
-                scored_chunks.append(c)
-            scored_chunks.sort(key=lambda x: -x["relevance_score"])
+        from utils.circuit_breaker import cohere_rerank_cb
+        
+        if cohere_key and chunks and cohere_rerank_cb.is_healthy():
+            try:
+                chunks_to_rank = chunks[:40]
+                cohere_resp = requests.post(
+                    "https://api.cohere.com/v1/rerank",
+                    headers={
+                        "accept":        "application/json",
+                        "content-type":  "application/json",
+                        "Authorization": f"bearer {cohere_key}"
+                    },
+                    json={
+                        "model":     "rerank-english-v3.0",
+                        "query":     query,
+                        "documents": [c["text"] for c in chunks_to_rank]
+                    },
+                    timeout=8
+                )
+                if cohere_resp.status_code == 200:
+                    cohere_rerank_cb.record_success()
+                    results = cohere_resp.json().get("results", [])
+                    top_chunks = []
+                    refs = []
+                    seen_docs = set()
+                    for r in results[:5]:  # Select top 5 chunks
+                        idx = r["index"]
+                        score = r["relevance_score"]
+                        chunk_data = chunks_to_rank[idx]
+                        chunk_data["relevance_score"] = score
+                        top_chunks.append(chunk_data)
+                        doc_id = chunk_data["document_id"]
+                        if doc_id not in seen_docs:
+                            seen_docs.add(doc_id)
+                            refs.append({
+                                "document_id":   str(doc_id),
+                                "document_name": chunk_data["original_name"],
+                                "relevance":     round(score, 4),
+                                "excerpt":       chunk_data["text"][:300],
+                                "category":      chunk_data["category"]
+                            })
+                    return top_chunks, refs
+                elif cohere_resp.status_code == 429:
+                    logger.warning("Cohere rerank rate limit.")
+                    cohere_rerank_cb.record_failure()
+                else:
+                    logger.error(f"Cohere rerank error: {cohere_resp.status_code}")
+                    cohere_rerank_cb.record_failure()
+            except requests.exceptions.Timeout:
+                logger.error("Cohere rerank timeout.")
+                cohere_rerank_cb.record_failure()
+            except Exception as e:
+                logger.warning(f"[RAG] Cohere Rerank failed: {e}")
+                cohere_rerank_cb.record_failure()
+                
+        return self._fallback_bge_rerank(chunks, query)
+
+    def _fallback_bge_rerank(self, chunks: list, query: str) -> tuple[list, list]:
+        if not hasattr(self, "_fallback_logged_rerank"):
+            logger.info("Reranker:\nFallback → BGE")
+            self._fallback_logged_rerank = True
             
-            # Map sources
+        if not chunks: return [], []
+            
+        try:
+            from sentence_transformers import CrossEncoder
+            if not hasattr(AvoraRAGEngine, "_bge_model"):
+                model_name = os.getenv("LOCAL_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+                AvoraRAGEngine._bge_model = CrossEncoder(model_name, max_length=512)
+            
+            chunks_to_rank = chunks[:40]
+            pairs = [[query, c["text"]] for c in chunks_to_rank]
+            scores = AvoraRAGEngine._bge_model.predict(pairs)
+            
+            scored = []
+            for i, score in enumerate(scores):
+                c = chunks_to_rank[i].copy()
+                c["relevance_score"] = float(score)
+                scored.append(c)
+                
+            scored.sort(key=lambda x: -x["relevance_score"])
+            
+            top_chunks = []
             refs = []
             seen_docs = set()
-            for c in scored_chunks[:5]:
+            for c in scored[:5]:
+                top_chunks.append(c)
                 doc_id = c["document_id"]
                 if doc_id not in seen_docs:
                     seen_docs.add(doc_id)
                     refs.append({
-                        "document_id":   doc_id,
+                        "document_id":   str(doc_id),
                         "document_name": c["original_name"],
-                        "relevance":     c["relevance_score"],
+                        "relevance":     round(c["relevance_score"], 4),
                         "excerpt":       c["text"][:300],
                         "category":      c["category"]
                     })
-            return scored_chunks[:5], refs
-
-        try:
-            # Limit chunks to rank for performance safety (top 40)
-            chunks_to_rank = chunks[:40]
-            cohere_resp = requests.post(
-                "https://api.cohere.com/v1/rerank",
-                headers={
-                    "accept":        "application/json",
-                    "content-type":  "application/json",
-                    "Authorization": f"bearer {cohere_key}"
-                },
-                json={
-                    "model":     "rerank-english-v3.0",
-                    "query":     query,
-                    "documents": [c["text"] for c in chunks_to_rank]
-                },
-                timeout=8
-            )
-            cohere_resp.raise_for_status()
-            results = cohere_resp.json().get("results", [])
-
-            top_chunks = []
-            refs = []
-            seen_docs = set()
-
-            for r in results[:5]:  # Select top 5 chunks
-                idx = r["index"]
-                score = r["relevance_score"]
-                chunk_data = chunks_to_rank[idx]
-                chunk_data["relevance_score"] = score
-                top_chunks.append(chunk_data)
-
-                # Add unique sources
-                doc_id = chunk_data["document_id"]
-                if doc_id not in seen_docs:
-                    seen_docs.add(doc_id)
-                    refs.append({
-                        "document_id":   str(doc_id),
-                        "document_name": chunk_data["original_name"],
-                        "relevance":     round(score, 4),
-                        "excerpt":       chunk_data["text"][:300],
-                        "category":      chunk_data["category"]
-                    })
-
             return top_chunks, refs
         except Exception as e:
-            logger.warning(f"[RAG] Cohere Rerank failed: {e}")
-            # Fall back to first 5 chunks directly
-            for c in chunks[:5]:
-                c["relevance_score"] = 0.5
+            logger.warning(f"[RAG] BGE fallback failed: {e}")
+            for c in chunks[:5]: c["relevance_score"] = 0.5
             return chunks[:5], []
 
     def _build_context(self, top_chunks: list) -> str:
@@ -272,8 +306,9 @@ class AvoraRAGEngine:
 
         thinking = f"Query: {question}\nContext Length: {len(context)} chars\nMode: {mode}"
         groq_key = getattr(settings, "GROQ_API_KEY", os.getenv("GROQ_API_KEY"))
+        from utils.circuit_breaker import groq_cb
 
-        if groq_key:
+        if groq_key and groq_cb.is_healthy():
             try:
                 messages = [{"role": "system", "content": f"{system_instruction}\n\nDOCUMENT CONTEXT:\n{context}"}]
                 for h in history[-4:]:
@@ -294,41 +329,62 @@ class AvoraRAGEngine:
                     },
                     timeout=15
                 )
-                resp.raise_for_status()
-                answer = resp.json()['choices'][0]['message']['content'].strip()
-                return answer, f"[Groq Llama-3.3-70B]\n{thinking}"
+                if resp.status_code == 200:
+                    groq_cb.record_success()
+                    answer = resp.json()['choices'][0]['message']['content'].strip()
+                    return answer, f"[Groq Llama-3.3-70B]\n{thinking}"
+                elif resp.status_code == 429:
+                    logger.warning("Groq rate limit reached.")
+                    groq_cb.record_failure()
+                else:
+                    logger.error(f"Groq API error: {resp.status_code}")
+                    groq_cb.record_failure()
+            except requests.exceptions.Timeout:
+                logger.error("Groq timeout.")
+                groq_cb.record_failure()
             except Exception as e:
                 logger.error(f"[RAG] Groq API call failed: {e}")
+                groq_cb.record_failure()
 
-        # Fallback to local Ollama
+        # Fallback to local Ollama (Qwen or Llama)
+        if not hasattr(self, "_fallback_logged_gen"):
+            logger.info("Generation:\nFallback → Qwen 3 8B")
+            self._fallback_logged_gen = True
+
+        prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+        prompt += f"{system_instruction}\n\nDOCUMENT CONTEXT:\n{context}<|eot_id|>"
+        for h in history[-4:]:
+            prompt += f"<|start_header_id|>{h['role'].lower()}<|end_header_id|>\n\n{h['content']}<|eot_id|>"
+        prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{question}<|eot_id|>"
+        prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
+
+        host = os.getenv("OLLAMA_HOST", getattr(settings, "OLLAMA_HOST", "http://localhost:11434"))
+        
         try:
-            # Build standard Llama-3 instruction template
-            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-            prompt += f"{system_instruction}\n\nDOCUMENT CONTEXT:\n{context}<|eot_id|>"
-
-            for h in history[-4:]:
-                role = h['role'].lower()
-                prompt += f"<|start_header_id|>{role}<|end_header_id|>\n\n{h['content']}<|eot_id|>"
-
-            prompt += f"<|start_header_id|>user<|end_header_id|>\n\n{question}<|eot_id|>"
-            prompt += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-
+            model = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b")
             resp = requests.post(
-                f"{settings.OLLAMA_HOST}/api/generate",
-                json={
-                    "model":  getattr(settings, "OLLAMA_CHAT_MODEL", "llama3.2:1b"),
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": 800, "temperature": 0.2},
-                },
+                f"{host}/api/generate",
+                json={"model": model, "prompt": prompt, "stream": False, "keep_alive": -1, "options": {"num_predict": 800, "temperature": 0.2}},
                 timeout=90,
             )
             resp.raise_for_status()
             answer = resp.json().get("response", "").strip()
-            return answer, f"[Ollama Fallback]\n{thinking}"
-        except Exception as e:
-            logger.error(f"[RAG] Ollama LLM fallback error: {e}")
-            return self._fallback_answer(question, context), f"[Rule-based Fallback]\n{thinking}"
+            return answer, f"[Ollama Qwen Fallback]\n{thinking}"
+        except Exception as e1:
+            logger.warning(f"[RAG] Primary LLM fallback error: {e1}")
+            try:
+                model = os.getenv("OLLAMA_CHAT_FALLBACK", "llama3.2:3b")
+                resp = requests.post(
+                    f"{host}/api/generate",
+                    json={"model": model, "prompt": prompt, "stream": False, "keep_alive": -1, "options": {"num_predict": 800, "temperature": 0.2}},
+                    timeout=90,
+                )
+                resp.raise_for_status()
+                answer = resp.json().get("response", "").strip()
+                return answer, f"[Ollama Secondary Fallback]\n{thinking}"
+            except Exception as e2:
+                logger.error(f"[RAG] Secondary LLM fallback error: {e2}")
+                return self._fallback_answer(question, context), f"[Rule-based Fallback]\n{thinking}"
 
     def _fallback_answer(self, question: str, context: str) -> str:
         """Rule-based fallback when both Groq and Ollama are unavailable."""

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Document, DocumentMetadata, DocumentChunk, DocumentShare
+from .models import Document, DocumentMetadata, DocumentChunk, DocumentShare, DocumentVersion, DocumentChangeLog
 
 class DocumentChunkSerializer(serializers.ModelSerializer):
     class Meta:
@@ -61,3 +61,16 @@ class DocumentShareSerializer(serializers.ModelSerializer):
         model  = DocumentShare
         fields = ['id', 'share_token', 'expires_at', 'is_active', 'created_at']
         read_only_fields = ['share_token', 'created_at']
+
+class DocumentVersionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DocumentVersion
+        fields = '__all__'
+
+class DocumentChangeLogSerializer(serializers.ModelSerializer):
+    from_version = DocumentVersionSerializer(read_only=True)
+    to_version = DocumentVersionSerializer(read_only=True)
+
+    class Meta:
+        model = DocumentChangeLog
+        fields = '__all__'

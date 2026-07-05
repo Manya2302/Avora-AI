@@ -9,11 +9,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.parsers import MultiPartParser, FormParser
-from .models import Document, DocumentMetadata, DocumentChunk, DocumentEncryptionKey
+from .models import Document, DocumentMetadata, DocumentChunk, DocumentEncryptionKey, DocumentVersion, DocumentChangeLog
 from .serializers import (
     DocumentListSerializer, DocumentDetailSerializer,
     DocumentMetadataSerializer, InitiateUploadSerializer,
     ChunkUploadSerializer, DocumentShareSerializer,
+    DocumentVersionSerializer, DocumentChangeLogSerializer
 )
 from .services.compression import compress, compression_ratio
 from .services.encryption import generate_aes_key, encrypt_chunk, wrap_key_with_rsa, generate_rsa_key_pair
@@ -21,6 +22,7 @@ from .services.chunking import calculate_total_chunks
 from .services.storage import generate_storage_key, upload_chunk, ensure_bucket_exists
 from apps.audit.models import AuditLog
 from .tasks import process_document_ai
+from apps.ai.tasks import analyze_temporal_diff_async
 
 
 class InitiateUploadView(APIView):
@@ -185,6 +187,16 @@ class DocumentViewSet(ModelViewSet):
         except Exception:
             pass
             
+        # Manually cascade delete decoupled intelligence records
+        from apps.contracts.models import ContractAnalysis
+        from apps.compliance.models import ComplianceRisk
+        from apps.ai.models import DocumentClassification, DocumentOCR
+        
+        ContractAnalysis.objects.filter(document_id=doc_id_str).delete()
+        ComplianceRisk.objects.filter(document_id=doc_id_str).delete()
+        DocumentClassification.objects.filter(document_id=doc_id_str).delete()
+        DocumentOCR.objects.filter(document_id=doc_id_str).delete()
+
         # Hard delete from local relational DB
         document.delete()
         return Response({'message': 'Document permanently deleted.'}, status=204)
@@ -198,6 +210,122 @@ class DocumentViewSet(ModelViewSet):
         # In production: generate MinIO pre-signed URL
         return Response({'message': 'Download endpoint — integrate MinIO presign here.',
                          'document_id': str(document.id)})
+
+    @action(detail=True, methods=['get'])
+    def versions(self, request, pk=None):
+        """Get version history of a document."""
+        document = self.get_object()
+        versions = DocumentVersion.objects.filter(document=document).order_by('-version_number')
+        serializer = DocumentVersionSerializer(versions, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def risks(self, request, pk=None):
+        """Get AI identified compliance risks for this specific document."""
+        from apps.compliance.models import ComplianceRisk
+        from apps.compliance.serializers import ComplianceRiskSerializer
+        
+        document = self.get_object()
+        risks = ComplianceRisk.objects.filter(document_id=str(document.id)).order_by('-created_at')
+        serializer = ComplianceRiskSerializer(risks, many=True)
+        return Response(serializer.data)
+
+
+    @action(detail=True, methods=['get'])
+    def change_logs(self, request, pk=None):
+        """Get temporal intelligence analysis (diffs, risks) between versions."""
+        document = self.get_object()
+        logs = DocumentChangeLog.objects.filter(document=document).order_by('-created_at')
+        serializer = DocumentChangeLogSerializer(logs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def save_version(self, request, pk=None):
+        """
+        Save a new version of the document from the frontend editor.
+        Expects 'raw_text' in the request body.
+        """
+        document = self.get_object()
+        raw_text = request.data.get('raw_text', '')
+        
+        if not raw_text:
+            return Response({'error': 'raw_text is required'}, status=400)
+
+        # Get or create the previous version (v1) if it doesn't exist
+        # We assume OCR text is v1 if there's no version
+        previous_version = DocumentVersion.objects.filter(document=document).order_by('-version_number').first()
+        
+        if not previous_version:
+            # Fallback to OCR text
+            from apps.ai.models import DocumentOCR
+            try:
+                ocr = DocumentOCR.objects.get(document_id=document.id)
+                old_text = ocr.cleaned_text or ocr.raw_text
+            except:
+                old_text = ""
+                
+            previous_version = DocumentVersion.objects.create(
+                document=document,
+                version_number=document.version,
+                created_by=document.owner,
+                raw_text=old_text
+            )
+
+        # Increment document version
+        document.version += 1
+        document.save(update_fields=['version', 'updated_at'])
+
+        # Create new version
+        new_version = DocumentVersion.objects.create(
+            document=document,
+            version_number=document.version,
+            created_by=request.user,
+            raw_text=raw_text
+        )
+
+        # Create change log and trigger temporal intelligence analysis
+        changelog = DocumentChangeLog.objects.create(
+            document=document,
+            from_version=previous_version,
+            to_version=new_version
+        )
+        
+        analyze_temporal_diff_async.delay(str(changelog.id))
+        
+        # Update OCR Text
+        from apps.ai.models import DocumentOCR
+        
+        try:
+            ocr = DocumentOCR.objects.get(document_id=document.id)
+            ocr.raw_text = raw_text
+            ocr.cleaned_text = raw_text
+            ocr.save(update_fields=['raw_text', 'cleaned_text'])
+        except DocumentOCR.DoesNotExist:
+            DocumentOCR.objects.create(document_id=document.id, raw_text=raw_text, cleaned_text=raw_text)
+            
+        # ── Document Type Router (Re-Run for Edited Text) ──
+        from apps.ai.services.classification import classify_document_v2
+        from apps.ai.tasks import analyze_compliance_risk_async, analyze_contract_async
+        import logging
+        
+        cls_data = classify_document_v2(str(document.id), raw_text)
+        category = cls_data.get('category', 'other')
+        logging.getLogger(__name__).info(f"[Editor Router] Re-routing edited document {document.id} as {category}")
+        
+        if category in ('contract', 'vendor_agreement', 'legal_agreement'):
+            analyze_contract_async.delay(str(document.id), str(request.user.id))
+            analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
+        elif category in ('policy', 'compliance_report', 'business_license', 'certificate', 'audit_report'):
+            analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
+        elif category == 'medical_record':
+            analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
+
+        return Response({
+            'message': 'Version saved successfully. Temporal intelligence analysis started.',
+            'version': document.version,
+            'changelog_id': str(changelog.id)
+        }, status=201)
+
 
 
 class DocumentMetadataView(generics.RetrieveUpdateAPIView):
