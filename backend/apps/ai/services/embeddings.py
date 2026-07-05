@@ -77,7 +77,7 @@ def generate_embedding(text: str, is_query: bool = False) -> list:
         return generate_local_fallback_embedding(text)
 
 
-def chunk_text(text: str, max_chars: int = 2000, overlap: int = 200) -> list:
+def chunk_text(text: str, max_chars: int = 3000, overlap: int = 300) -> list:
     paras = [p.strip() for p in text.split('\n') if p.strip()]
     chunks = []
     current_chunk = ""
