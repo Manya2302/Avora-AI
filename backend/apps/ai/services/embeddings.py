@@ -215,24 +215,42 @@ def generate_and_store_embedding_v2(
     chunks = chunk_text(text)
     vectors = generate_embeddings_batch(chunks)
     
+    # Fetch AES Key for Zero-Knowledge Qdrant Storage
+    aes_key = None
+    try:
+        from apps.documents.models import DocumentEncryptionKey
+        key_record = DocumentEncryptionKey.objects.get(document_id=document_id)
+        # In dev mode, encrypted_aes_key holds the raw AES key
+        aes_key = key_record.encrypted_aes_key
+    except Exception as e:
+        logger.warning(f"Could not retrieve AES key for zero-knowledge Qdrant payload: {e}")
+
     points = []
     for i, (chunk_str, vector) in enumerate(zip(chunks, vectors)):
         point_id = str(uuid.uuid5(uuid.UUID(str(document_id)), f"chunk_{i}"))
-        points.append(PointStruct(
-            id=point_id,
-            vector=vector,
-            payload={
-                'document_id':     str(document_id),
-                'owner_id':        str(owner_id),
-                'chunk_index':     i,
-                'chunk_text':      chunk_str,
-                'category':        category,
-                'confidentiality': confidentiality,
-                'short_summary':   short_summary,
-                'original_name':   original_name,
-                'tags':            [],
-            }
-        ))
+        
+        payload = {
+            'document_id':     str(document_id),
+            'owner_id':        str(owner_id),
+            'chunk_index':     i,
+            'category':        category,
+            'confidentiality': confidentiality,
+            'original_name':   original_name,
+            'tags':            [],
+        }
+        
+        if aes_key:
+            from apps.documents.services.encryption import encrypt_string
+            payload['chunk_text_enc'] = encrypt_string(chunk_str, aes_key)
+            if short_summary:
+                payload['short_summary_enc'] = encrypt_string(short_summary, aes_key)
+            payload['is_encrypted'] = True
+        else:
+            payload['chunk_text'] = chunk_str
+            payload['short_summary'] = short_summary
+            payload['is_encrypted'] = False
+
+        points.append(PointStruct(id=point_id, vector=vector, payload=payload))
         
     for i in range(0, len(points), 100):
         client.upsert(

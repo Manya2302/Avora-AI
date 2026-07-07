@@ -76,6 +76,10 @@ export const documentsApi = {
   downloadUrl:    (id: string) => api.get(`/documents/${id}/download_url/`),
   getMetadata:    (id: string) => api.get(`/documents/${id}/metadata/`),
   updateMetadata: (id: string, data: Record<string, unknown>) => api.patch(`/documents/${id}/metadata/`, data),
+  versions:       (id: string) => api.get(`/documents/${id}/versions/`),
+  changeLogs:     (id: string) => api.get(`/documents/${id}/change_logs/`),
+  saveVersion:    (id: string, raw_text: string) => api.post(`/documents/${id}/save_version/`, { raw_text }),
+  risks:          (id: string) => api.get(`/documents/${id}/risks/`),
 }
 
 // ── AI / Orivo ────────────────────────────────────────────────
@@ -138,6 +142,8 @@ export const complianceApi = {
   missingDocs:      () => api.get('/compliance/missing/'),
   expiryAlerts:     () => api.get('/compliance/expiry/'),
   dismissAlert:     (id: string) => api.patch(`/compliance/expiry/${id}/dismiss/`),
+  dismissRisk:      (id: string) => api.patch(`/compliance/risk/${id}/dismiss/`),
+  dismissFact:      (id: string) => api.patch(`/compliance/fact/${id}/dismiss/`),
   generatePackage:  (name?: string) => api.post('/compliance/audit-package/generate/', { name }),
   auditPackages:    () => api.get('/compliance/audit-packages/'),
   askCopilot:       (question: string) => api.post('/compliance/copilot/', { question }),
@@ -181,6 +187,9 @@ export const knowledgeApi = {
   build:        () => api.post('/knowledge/build/'),
   search:       (q: string) => api.get('/knowledge/search/', { params: { q } }),
   vendorProfile:(name: string) => api.get(`/knowledge/vendor/${encodeURIComponent(name)}/`),
+  // AI Graph Scorer
+  score:        (data: Record<string, unknown>) => api.post('/knowledge/score/', data),
+  confirm:      (data: Record<string, unknown>) => api.post('/knowledge/confirm/', data),
 }
 
 // ── Phase 4: Admin AI Governance ───────────────────────────────
@@ -189,4 +198,22 @@ export const adminGovernanceApi = {
   prompts:         () => api.get('/admin-panel/prompts/'),
   knowledgeStats:  () => api.get('/admin-panel/knowledge-stats/'),
   flaggedResponses:() => api.get('/admin-panel/flagged-responses/'),
+}
+
+// ── Enterprise Governance (Organizations) ──────────────────────
+export const orgApi = {
+  tree:              () => api.get('/org/tree/'),
+  departments:       () => api.get('/org/departments/'),
+  createDept:        (d: Record<string, unknown>) => api.post('/org/departments/', d),
+  updateDept:        (id: string, d: Record<string, unknown>) => api.patch(`/org/departments/${id}/`, d),
+  deleteDept:        (id: string) => api.delete(`/org/departments/${id}/`),
+  roles:             () => api.get('/org/roles/'),
+  createRole:        (d: Record<string, unknown>) => api.post('/org/roles/', d),
+  updateRole:        (id: string, d: Record<string, unknown>) => api.patch(`/org/roles/${id}/`, d),
+  members:           (dept?: string) => api.get('/org/members/', { params: dept ? { department: dept } : {} }),
+  assignMember:      (d: Record<string, unknown>) => api.post('/org/members/assign/', d),
+  updateMember:      (id: string, d: Record<string, unknown>) => api.patch(`/org/members/${id}/`, d),
+  myPermissions:     () => api.get('/org/my-permissions/'),
+  visibility:        (docId: string) => api.get(`/org/visibility/${docId}/`),
+  setVisibility:     (docId: string, d: Record<string, unknown>) => api.patch(`/org/visibility/${docId}/`, d),
 }

@@ -26,8 +26,8 @@ class SemanticSearchView(APIView):
         query = request.data.get('query', '').strip()
         if not query:
             return Response({'error': 'Query is required.'}, status=400)
-        from .services.search import semantic_search
-        result = semantic_search(
+        from .services.hybrid_search import hybrid_search
+        result = hybrid_search(
             query    = query,
             owner_id = str(request.user.id),
             top_k    = int(request.data.get('top_k', 10)),
@@ -45,9 +45,11 @@ class SemanticSearchView(APIView):
             )
             result['ai_answer'] = rag_result.get('answer', '')
             result['ai_confidence'] = rag_result.get('confidence', 0.0)
+            result['ai_sources'] = rag_result.get('sources', [])
         except Exception as e:
             result['ai_answer'] = ''
             result['ai_confidence'] = 0.0
+            result['ai_sources'] = []
 
         return Response(result)
 

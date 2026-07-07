@@ -72,6 +72,9 @@ def run_ai_pipeline(self, document_id: str, owner_id: str):
 
         scan_document_expiry.delay(document_id, owner_id)
         compute_similarity.delay(document_id, owner_id)
+        
+        # Knowledge Graph auto-processing
+        process_knowledge_graph_async.delay(document_id, owner_id, doc.original_name)
 
         queue.stage='completed'; queue.progress=100
         queue.completed_at=timezone.now()
@@ -137,6 +140,41 @@ def scan_document_expiry(document_id: str, owner_id: str):
         owner = User.objects.get(id=owner_id)
         scan_for_expiry_dates(owner)
     except Exception as e: logger.warning(f"[Expiry] {e}")
+
+@shared_task
+def process_knowledge_graph_async(document_id: str, owner_id: str, doc_name: str):
+    """Auto-scores and adds to the knowledge graph based on user settings."""
+    try:
+        from django.contrib.auth import get_user_model
+        from apps.documents.models import DocumentMetadata
+        from apps.ai.models import DocumentOCR
+        from apps.knowledge.services.graph_scorer import score_document_for_graph, build_graph_from_score_result
+        
+        User = get_user_model()
+        owner = User.objects.get(id=owner_id)
+        meta = DocumentMetadata.objects.get(document_id=document_id)
+        
+        graph_processing = meta.extra.get('graph_processing', 'ai')
+        if graph_processing == 'never':
+            return
+            
+        ocr = DocumentOCR.objects.get(document_id=document_id)
+        text = ocr.cleaned_text or ocr.raw_text or ''
+        
+        if not text:
+            return
+            
+        score_result = score_document_for_graph(document_id, text, doc_name)
+        
+        should_add = (graph_processing == 'always') or (graph_processing == 'ai' and score_result.get('recommended', False))
+        
+        if should_add:
+            # Inject upload metadata (department/employee) to ensure graph nodes have proper details
+            build_graph_from_score_result(document_id, owner, doc_name, score_result)
+            logger.info(f"[Graph] Auto-added {document_id[:8]} to Knowledge Graph")
+            
+    except Exception as e:
+        logger.warning(f"[Graph Auto-Process] {e}")
 
 @shared_task
 def rebuild_smart_collections(user_id: str):

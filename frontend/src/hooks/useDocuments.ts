@@ -29,13 +29,18 @@ export function useDocument(id: string) {
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
 
-  useEffect(() => {
+  const fetch = useCallback(() => {
     if (!id) return
+    setLoading(true)
     documentsApi.get(id)
       .then(r => setDoc(r.data))
       .catch(e => setError(e?.response?.data?.detail || 'Not found'))
       .finally(() => setLoading(false))
   }, [id])
 
-  return { doc, loading, error }
+  useEffect(() => {
+    fetch()
+  }, [fetch])
+
+  return { doc, loading, error, refetch: fetch }
 }

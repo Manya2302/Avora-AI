@@ -27,6 +27,8 @@ export default function SearchPage() {
   const [filters, setFilters]       = useState<Record<string,string>>({})
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiConfidence, setAiConfidence] = useState(0)
+  const [aiSources, setAiSources] = useState<any[]>([])
+  const [expandedBreakdown, setExpandedBreakdown] = useState<string|null>(null)
 
   useEffect(() => {
     aiApi.popularSearches().then(r => setPopular(r.data.popular || [])).catch(() => {})
@@ -52,13 +54,14 @@ export default function SearchPage() {
     const text = (q ?? query).trim()
     if (!text) return
     setQuery(text); setLoading(true); setSearched(true); setShowSuggestions(false)
-    setAiAnswer(''); setAiConfidence(0)
+    setAiAnswer(''); setAiConfidence(0); setAiSources([]); setExpandedBreakdown(null)
     try {
       const { data } = await aiApi.search({ query: text, top_k: 12, filters })
       setResults(data.results || [])
       setElapsed(data.elapsed_ms || 0)
       setAiAnswer(data.ai_answer || '')
       setAiConfidence(data.ai_confidence || 0)
+      setAiSources(data.ai_sources || [])
     } catch { setResults([]) }
     finally { setLoading(false) }
   }
@@ -224,8 +227,8 @@ export default function SearchPage() {
             <span className="text-xs font-mono text-[#9B9890]">
               Avora found <strong className="text-[#0E0D0A]">{results.length} results</strong>
             </span>
-            <span className="font-mono text-[10px] text-[#9B9890] bg-[#F7F5F0] px-2.5 py-1 rounded-full border border-[#ECEAE4]">
-              Semantic · {elapsed}ms
+            <span className="font-mono text-[10px] text-[#1A3DAF] bg-[#EBF0FF] px-2.5 py-1 rounded-full border border-[#1A3DAF]/15">
+              ⚡ Hybrid Retrieval · {elapsed}ms
             </span>
           </div>
 
@@ -254,11 +257,28 @@ export default function SearchPage() {
                   </div>
                   {r.short_summary && <p className="text-[12.5px] font-light text-[#5A5750] line-clamp-2 mb-2">{r.short_summary}</p>}
                   <div className="flex items-center gap-3 flex-wrap">
-                    {r.tags?.slice(0,4).map(t => <span key={t} className="font-mono text-[10px] text-[#9B9890]">{t}</span>)}
+                    {r.tags?.slice(0,4).map((t:string) => <span key={t} className="font-mono text-[10px] text-[#9B9890]">{t}</span>)}
                     <span className={`font-mono text-[10px] font-semibold ml-auto px-2 py-0.5 rounded-full border flex-shrink-0 ${r.score >= 90 ? 'bg-green-50 text-green-700 border-green-100' : r.score >= 70 ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-[#F7F5F0] text-[#9B9890] border-[#DDD9D0]'}`}>
                       {r.score}% match
                     </span>
+                    <button onClick={e => { e.stopPropagation(); setExpandedBreakdown(expandedBreakdown === r.document_id ? null : r.document_id) }}
+                      className="font-mono text-[10px] text-[#9B9890] hover:text-[#1A3DAF] transition-colors">
+                      {expandedBreakdown === r.document_id ? '▲ hide' : '▼ why?'}
+                    </button>
                   </div>
+                  {expandedBreakdown === r.document_id && (r as any).score_breakdown && (
+                    <div className="mt-2 grid grid-cols-5 gap-1.5 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[8px] p-2.5">
+                      {Object.entries((r as any).score_breakdown).map(([k, v]: any) => (
+                        <div key={k} className="text-center">
+                          <div className="font-mono text-[11px] font-bold text-[#0E0D0A]">{v}%</div>
+                          <div className="font-mono text-[9px] text-[#9B9890] capitalize">{k}</div>
+                          <div className="h-1 bg-[#ECEAE4] rounded-full mt-1 overflow-hidden">
+                            <div className="h-full bg-[#1A3DAF] rounded-full" style={{width: `${Math.min(v,100)}%`}}/>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))
@@ -267,7 +287,7 @@ export default function SearchPage() {
           {results.length > 0 && (
             <div className="px-5 py-3 bg-[#EBF0FF] border-t border-[#1A3DAF]/10 flex items-center gap-2">
               <Sparkles className="w-3.5 h-3.5 text-[#1A3DAF]" />
-              <span className="font-mono text-[11px] text-[#1A3DAF]">Avora matched by semantic meaning — results may not contain exact query words</span>
+              <span className="font-mono text-[11px] text-[#1A3DAF]">Hybrid Retrieval — Vector · BM25 · Metadata · Knowledge Graph · Recency · Reranking</span>
             </div>
           )}
         </div>

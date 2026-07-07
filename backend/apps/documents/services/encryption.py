@@ -99,3 +99,23 @@ def verify_sha256(data: bytes, stored_hash: str) -> bool:
     """Layer 5: SHA-256 integrity verification."""
     computed = hashlib.sha256(data).hexdigest()
     return computed == stored_hash
+
+
+def encrypt_string(text: str, aes_key: bytes) -> dict:
+    """Encrypt a string and return hex-encoded fields for JSON storage."""
+    res = encrypt_chunk(text.encode('utf-8'), aes_key)
+    return {
+        'ciphertext_hex': res['ciphertext'].hex(),
+        'iv_hex': res['iv'],
+        'tag_hex': res['tag'],
+    }
+
+
+def decrypt_string(encrypted_dict: dict, aes_key: bytes) -> str:
+    """Decrypt a hex-encoded dictionary back to string."""
+    try:
+        ciphertext_with_tag = bytes.fromhex(encrypted_dict['ciphertext_hex']) + bytes.fromhex(encrypted_dict['tag_hex'])
+        plaintext_bytes = decrypt_chunk(ciphertext_with_tag, aes_key, encrypted_dict['iv_hex'])
+        return plaintext_bytes.decode('utf-8')
+    except Exception as e:
+        return ""

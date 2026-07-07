@@ -27,20 +27,26 @@ class AvoraRAGEngine:
               mode: str = "document", conversation_history: list = None) -> dict:
         t0 = time.time()
 
+        # 0 — Coordinator Agent: Intent Detection & Routing
+        coordinator_data = self._coordinator_agent(question, conversation_history or [])
+        active_agent = coordinator_data["agent_name"]
+        agent_reason = coordinator_data["reasoning"]
+        target_categories = coordinator_data["target_categories"]
+
         # 1 — Multi-Query Expansion
         queries = self._expand_query_multi(question, conversation_history or [])
 
-        # 2 & 3 — Retrieve chunks for all query variations directly from Qdrant
-        chunks = self._retrieve_chunks_multi(queries, owner_id)
+        # 2 & 3 — Retrieve chunks for all query variations, filtering by agent categories
+        chunks = self._retrieve_chunks_multi(queries, owner_id, target_categories)
 
         # 4 — Rerank chunks with Cohere Rerank
         top_chunks, refs = self._rerank_chunks(chunks, question)
 
-        # 5 — Build context from top ranked chunks
-        context = self._build_context(top_chunks)
+        # 5 — Build context from top ranked chunks and AI Memory
+        context = self._build_context(top_chunks, owner_id, question)
 
-        # 6 — Generate answer with Groq (Llama-3.3-70B) or Ollama
-        answer, thinking = self._generate_answer(question, context, mode, conversation_history or [])
+        # 6 — Generate answer using the specialized agent's persona
+        answer, thinking = self._generate_answer(question, context, active_agent.lower().replace(" agent", ""), conversation_history or [])
 
         # 7 — Score confidence based on Cohere relevance score
         confidence = self._score_confidence(answer, top_chunks)
@@ -59,7 +65,53 @@ class AvoraRAGEngine:
             "docs_retrieved": len(set(c["document_id"] for c in chunks)),
             "hallucination_flags": flags,
             "query_expanded": ", ".join(queries),
+            "active_agent":   active_agent,
+            "agent_reason":   agent_reason,
         }
+
+    def _coordinator_agent(self, question: str, history: list) -> dict:
+        """Dynamically route the user query to the most appropriate specialized AI Agent."""
+        import json
+        groq_key = getattr(settings, "GROQ_API_KEY", os.getenv("GROQ_API_KEY"))
+        default_route = {"agent_name": "Search Agent", "reasoning": "Defaulting to general search.", "target_categories": []}
+        if not groq_key: return default_route
+
+        try:
+            history_summary = " ".join([f"{m['role']}: {m['content'][:80]}" for m in (history or [])[-2:]])
+            system_prompt = """You are the Coordinator Agent of Avora AI.
+Your job is to route the user's query to the most appropriate specialized agent.
+Available Agents:
+- Search Agent: General questions, semantic search, summaries. Categories: []
+- Finance Agent: Revenue, budget, taxes, balance sheet, payroll. Categories: ['finance', 'invoice']
+- Security Agent: Cybersecurity, encryption, IAM, MFA, incidents. Categories: ['security']
+- Compliance Agent: GDPR, HIPAA, compliance scores, missing clauses. Categories: ['policy', 'certificate']
+- Legal Agent: Contracts, NDAs, liability, governing law, IP. Categories: ['contract']
+- Report Agent: Executive reports, multi-document analysis. Categories: []
+
+Respond ONLY with valid JSON.
+{
+  "agent_name": "Finance Agent|Security Agent|Compliance Agent|Legal Agent|Search Agent|Report Agent",
+  "reasoning": "Brief explanation why this agent was selected.",
+  "target_categories": ["contract", "policy", "finance"]
+}"""
+            user_content = question
+            if history_summary: user_content = f"History: {history_summary}\nQuestion: {question}"
+
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}], "temperature": 0.1},
+                timeout=5
+            )
+            if resp.status_code == 200:
+                text = resp.json()['choices'][0]['message']['content'].strip()
+                import re
+                json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group(0))
+        except Exception as e:
+            logger.warning(f"[Coordinator] Failed to route: {e}")
+        return default_route
 
     def _expand_query_multi(self, question: str, history: list) -> list:
         """Expand user query into multiple variations using LLM to capture diverse wording."""
@@ -118,11 +170,11 @@ class AvoraRAGEngine:
             logger.warning(f"[RAG] Groq query expansion failed: {e}")
             return [question, f"{question} summary", f"{question} details"]
 
-    def _retrieve_chunks_multi(self, queries: list, owner_id: str) -> list:
+    def _retrieve_chunks_multi(self, queries: list, owner_id: str, target_categories: list = None) -> list:
         """Search Qdrant for all query variations, combine and deduplicate chunk results."""
         try:
             from apps.ai.services.embeddings import generate_embedding
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
             from utils.qdrant_client import get_client
 
             client = get_client()
@@ -131,10 +183,15 @@ class AvoraRAGEngine:
             for q in queries:
                 try:
                     vector = generate_embedding(q, is_query=True)
+                    must_conditions = [FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]
+                    
+                    if target_categories:
+                        must_conditions.append(FieldCondition(key="category", match=MatchAny(any=target_categories)))
+                        
                     res = client.query_points(
                         collection_name=settings.QDRANT_COLLECTION,
                         query=vector,
-                        query_filter=Filter(must=[FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]),
+                        query_filter=Filter(must=must_conditions),
                         limit=12,
                         with_payload=True,
                         score_threshold=CONFIDENCE_THRESHOLD,
@@ -146,12 +203,26 @@ class AvoraRAGEngine:
                         if not doc_id:
                             continue
                         if chunk_id not in retrieved_chunks or h.score > retrieved_chunks[chunk_id]["score"]:
+                            # Handle zero-knowledge decryption
+                            chunk_text = h.payload.get("chunk_text", h.payload.get("short_summary", ""))
+                            is_encrypted = h.payload.get("is_encrypted", False)
+                            if is_encrypted and h.payload.get("chunk_text_enc"):
+                                try:
+                                    from apps.documents.models import DocumentEncryptionKey
+                                    from apps.documents.services.encryption import decrypt_string
+                                    key_record = DocumentEncryptionKey.objects.get(document_id=doc_id)
+                                    aes_key = key_record.encrypted_aes_key
+                                    chunk_text = decrypt_string(h.payload.get("chunk_text_enc"), aes_key)
+                                except Exception as dec_err:
+                                    logger.warning(f"[RAG] Failed to decrypt chunk {chunk_id}: {dec_err}")
+                                    chunk_text = "[Encrypted Content - Decryption Failed]"
+
                             retrieved_chunks[chunk_id] = {
                                 "chunk_id":       chunk_id,
                                 "document_id":    doc_id,
                                 "original_name":  h.payload.get("original_name", ""),
                                 "category":       h.payload.get("category", ""),
-                                "text":           h.payload.get("chunk_text", h.payload.get("short_summary", "")),
+                                "text":           chunk_text,
                                 "score":          h.score,
                             }
                 except Exception as query_err:
@@ -277,9 +348,37 @@ class AvoraRAGEngine:
             for c in chunks[:5]: c["relevance_score"] = 0.5
             return chunks[:5], []
 
-    def _build_context(self, top_chunks: list) -> str:
-        """Format the top ranked chunks with sources into a clean prompt context."""
+    def _build_context(self, top_chunks: list, owner_id: str, question: str) -> str:
+        """Format the top ranked chunks with sources and add Organizational AI Memory."""
         context_parts = []
+        
+        # 1. Organizational AI Memory (Phase 11)
+        try:
+            from apps.knowledge.models import KnowledgeNode
+            # Find nodes that might match the question (e.g. acronyms, projects, people)
+            q_lower = question.lower()
+            tokens = [t for t in q_lower.split() if len(t) > 3]
+            
+            memory_nodes = []
+            for token in tokens:
+                nodes = KnowledgeNode.objects.filter(name__icontains=token, owner_id=owner_id)[:3]
+                memory_nodes.extend(nodes)
+            
+            if memory_nodes:
+                memory_parts = []
+                seen_mem = set()
+                for n in memory_nodes:
+                    if n.id in seen_mem: continue
+                    seen_mem.add(n.id)
+                    details = ", ".join(f"{k}: {v}" for k, v in n.properties.items() if v)
+                    memory_parts.append(f"- {n.name} ({n.node_type.upper()}): {details}")
+                
+                if memory_parts:
+                    context_parts.append("[ORGANIZATIONAL MEMORY]\n" + "\n".join(memory_parts) + "\n")
+        except Exception as e:
+            logger.warning(f"[RAG] Failed to inject AI Memory: {e}")
+            
+        # 2. Document Chunks
         for i, chunk in enumerate(top_chunks):
             src_name = chunk.get('original_name', '')
             src_cat  = chunk.get('category', '')

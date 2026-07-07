@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlertTriangle, FileText, Clock } from 'lucide-react'
+import { AlertTriangle, FileText, Clock, BrainCircuit, Activity } from 'lucide-react'
 import { contractsApi, complianceApi } from '@/lib/api'
 import StatCard from '@/components/shared/StatCard'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
@@ -12,6 +12,7 @@ export default function RiskDashboard() {
   const [risk, setRisk]     = useState<any>(null)
   const [renewals, setRenew] = useState<any[]>([])
   const [expiry, setExpiry]  = useState<any[]>([])
+  const [recentRisks, setRecentRisks] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -19,6 +20,7 @@ export default function RiskDashboard() {
       contractsApi.riskSummary().then(r=>setRisk(r.data)),
       contractsApi.renewals(90).then(r=>setRenew(r.data.renewals||[])),
       complianceApi.expiryAlerts().then(r=>setExpiry(r.data.results||[])),
+      complianceApi.dashboard().then(r=>setRecentRisks(r.data.recent_risks||[])),
     ]).finally(()=>setLoading(false))
   }, [])
 
@@ -39,9 +41,28 @@ export default function RiskDashboard() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
           <StatCard label="Critical Risk"   value={risk.critical}    icon={<AlertTriangle/>} accent="red"   onClick={()=>router.push('/contracts?risk=critical')}/>
           <StatCard label="High Risk"       value={risk.high}        icon={<AlertTriangle/>} accent="amber" onClick={()=>router.push('/contracts?risk=high')}/>
-          <StatCard label="Expiring 30d"    value={risk.expiring_30} icon={<Clock/>}         accent="amber"/>
+          <StatCard label="Expiring 90d"    value={risk.expiring_30} icon={<Clock/>}         accent="amber"/>
           <StatCard label="Total Contracts" value={risk.total}        icon={<FileText/>}      accent="blue"/>
         </div>
+      )}
+
+      {risk?.predictions?.length > 0 && (
+        <Card className="border-[#1A3DAF]/20 bg-[#F7F9FF]">
+          <CardHeader title="AI Predictive Intelligence" action={<Badge variant="blue"><BrainCircuit className="w-3 h-3 mr-1 inline" /> Forecasting Active</Badge>} />
+          <div className="divide-y divide-[#ECEAE4]">
+            {risk.predictions.map((p:any, i:number) => (
+              <div key={i} className="px-5 py-4 flex gap-4 items-start hover:bg-white transition-colors cursor-default">
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${p.type === 'critical' ? 'bg-red-100 text-red-600' : p.type === 'warning' ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
+                  {p.type === 'critical' ? <AlertTriangle className="w-4 h-4"/> : p.type === 'warning' ? <Activity className="w-4 h-4"/> : <BrainCircuit className="w-4 h-4"/>}
+                </div>
+                <div>
+                  <h4 className={`text-sm font-bold mb-1 ${p.type === 'critical' ? 'text-red-700' : p.type === 'warning' ? 'text-amber-700' : 'text-green-700'}`}>{p.title}</h4>
+                  <p className="text-[13px] text-[#5A5750] leading-relaxed">{p.message}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -95,11 +116,51 @@ export default function RiskDashboard() {
                   className={`p-4 border rounded-[12px] text-center hover:shadow-md transition-all hover:-translate-y-0.5 ${rb(String(l))}`}>
                   <div className={`font-display text-3xl font-bold mb-1 ${rl(String(l))}`}>{v}</div>
                   <div className={`text-xs font-semibold capitalize ${rl(String(l))}`}>{l} Risk</div>
-                  <div className="text-[11px] text-[#9B9890] mt-0.5">{risk.total>0?Math.round(Number(v)/risk.total*100):0}%</div>
+                  <div className="text-[11px] text-[#9B9890] mt-0.5">{risk.total_risks>0?Math.round(Number(v)/risk.total_risks*100):0}%</div>
                 </button>
               ))}
             </div>
           </CardBody>
+        </Card>
+      )}
+
+      {recentRisks.length > 0 && (
+        <Card>
+          <CardHeader title="Recent Detected Risks" action={<button onClick={()=>router.push('/compliance')} className="text-xs text-[#1A3DAF] hover:underline">View Compliance →</button>}/>
+          <div className="divide-y divide-[#ECEAE4]">
+            {recentRisks.slice(0, 10).map((risk:any) => (
+              <div key={risk.id} className="p-5 hover:bg-[#F7F5F0]">
+                <div className="flex items-center gap-3 mb-2">
+                   <AlertTriangle className={`w-4 h-4 ${risk.severity === 'critical' ? 'text-red-600' : 'text-amber-500'}`} />
+                   <p className="font-medium text-[#0E0D0A] flex-1">{risk.doc_name || 'Document'}</p>
+                   <Badge variant={risk.severity === 'critical' || risk.severity === 'high' ? 'red' : 'amber'}>{risk.severity}</Badge>
+                   <Badge variant="gray">{risk.compliance_standard}</Badge>
+                   <button onClick={async () => {
+                      await complianceApi.dismissRisk(risk.id);
+                      setRecentRisks(recentRisks.filter(r => r.id !== risk.id));
+                   }} className="text-xs text-[#9B9890] hover:text-[#1A3DAF] ml-1 font-medium transition-colors">
+                     Ignore
+                   </button>
+                </div>
+                <p className="text-xs font-semibold text-[#5A5750] mb-1 ml-7">{risk.risk_type}</p>
+                <p className="text-sm font-light text-[#252318] leading-relaxed mb-3 ml-7">{risk.description}</p>
+                
+                {risk.location && (
+                  <p className="text-xs font-mono text-amber-800 bg-amber-50 p-2.5 rounded border border-amber-200 ml-7 mb-3">
+                    <strong className="block text-amber-900 mb-1 uppercase tracking-wide text-[10px]">Location / Problem Snippet</strong>
+                    {risk.location}
+                  </p>
+                )}
+
+                {risk.suggested_fix && (
+                  <p className="text-xs font-mono text-green-700 bg-green-50 p-3 rounded-lg border border-green-200 ml-7">
+                    <strong className="block text-green-800 mb-1 uppercase tracking-wide">How to Solve</strong>
+                    {risk.suggested_fix}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
         </Card>
       )}
     </div>

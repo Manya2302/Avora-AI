@@ -3,37 +3,79 @@ import json
 import logging
 import requests
 from django.conf import settings
-from apps.compliance.models import ComplianceRisk
+from apps.compliance.models import ComplianceRisk, ComplianceCheckResult
 
 logger = logging.getLogger(__name__)
 
 def analyze_compliance_risk(document_id: str, owner, text: str, doc_name: str):
     """
     Passes the document text through a local LLM or Groq to audit for compliance risks
-    and missing standard form details.
+    and missing standard form details, strictly separating Facts from Impact.
     """
-    logger.info(f"[Compliance] Starting intelligence scan for {document_id}")
+    logger.info(f"[Compliance] Starting two-engine scan for {document_id}")
     
-    # Delete old risks for this document so we don't accumulate duplicates on edits
+    # Delete old results so we don't accumulate duplicates on edits
     ComplianceRisk.objects.filter(document_id=document_id).delete()
+    ComplianceCheckResult.objects.filter(document_id=document_id).delete()
     
-    prompt = f"""
-You are an expert Compliance Auditor and Predictive Risk Analyst.
-Analyze the following document for:
-1. Compliance violations and missing standard clauses (e.g., ISO 27001, SOC 2, HIPAA, GDPR).
-2. Missing fill-in-the-blank details or signatures.
-3. Operational and Predictive Risks explicitly stated in the text (e.g., expired certificates, overdue security reviews, delayed breach notifications, increasing vendor risk scores, overdue penetration testing).
+    from apps.documents.models import DocumentMetadata
+    industry_edition = "generic"
+    try:
+        meta = DocumentMetadata.objects.filter(document_id=document_id).first()
+        if meta:
+            industry_edition = meta.extra.get('industry_edition', 'generic')
+    except Exception:
+        pass
+        
+    industry_context = ""
+    if industry_edition == "healthcare":
+        industry_context = "- Healthcare Focus: Prioritize HIPAA compliance, PHI (Protected Health Information) risks, and medical document intelligence."
+    elif industry_edition == "legal":
+        industry_context = "- Legal Focus: Prioritize contract clauses, legal risk scoring, liability terms, and signature requirements."
+    elif industry_edition == "finance":
+        industry_context = "- Finance Focus: Prioritize AML (Anti-Money Laundering), KYC, regulatory reporting, and financial fraud risks."
+    elif industry_edition == "manufacturing":
+        industry_context = "- Manufacturing Focus: Prioritize SOP validations, ISO compliance, and supply chain audit trails."
+    elif industry_edition == "government":
+        industry_context = "- Government Focus: Prioritize records management, security clearance levels, and strict audit trails."
 
-Output your findings exactly in the following JSON array format. Do not write any other text.
-[
+    prompt = f"""
+You are an advanced Enterprise AI Governance Engine.
+Your task is to analyze the document and explicitly separate your findings into two distinct categories.
+Focus heavily on this industry context:
+{industry_context}
+
+1. COMPLIANCE FACTS ("What is missing or present?")
+- Does this document meet required standards today?
+- Check for standard clauses (e.g. GDPR, HIPAA, SOC 2, Encryption, Signatures, Retention) and industry-specific clauses.
+- Output whether each requirement is "Present" or "Missing" based on the text.
+
+2. BUSINESS RISKS ("What happens because it is missing?")
+- Given the current document, what could go wrong?
+- Translate the missing compliance facts into business impact.
+- Also detect predictive risks: Contract expiring soon, Vendor risk increasing, Audit failure probability.
+
+Output ONLY a raw JSON object with exactly two arrays. Do not write any other text.
+{{
+  "compliance_facts": [
     {{
-        "standard": "GDPR / SOC 2 / Operational / Predictive",
-        "type": "Missing Clause / Operational Risk / Expired Certificate / Overdue Review",
-        "severity": "critical / high / medium / low",
-        "description": "Clear explanation of the risk, missing element, or negative trend found.",
-        "suggested_fix": "What the user needs to do to mitigate this."
+      "requirement": "e.g., HIPAA Clause, Encryption, Signature",
+      "status": "Present" or "Missing",
+      "description": "Brief explanation of what was found or missing.",
+      "location": "Quote the exact text snippet where it was found, or specify exactly where it should be inserted if missing."
     }}
-]
+  ],
+  "business_risks": [
+    {{
+      "standard": "The expected standard (e.g., HIPAA, GDPR, Predictive)",
+      "type": "Missing Control / Operational Risk / Predictive Risk",
+      "severity": "critical / high / medium / low",
+      "description": "Clear explanation of the business risk and impact.",
+      "location": "Quote the problematic text snippet that triggers this risk, or state 'Entire Document'.",
+      "suggested_fix": "Exact step-by-step instructions on how to solve this issue and mitigate the risk."
+    }}
+  ]
+}}
 
 DOCUMENT CONTENT:
 {text[:8000]}
@@ -42,7 +84,7 @@ DOCUMENT CONTENT:
     host = os.getenv("OLLAMA_HOST", getattr(settings, "OLLAMA_HOST", "http://localhost:11434"))
     model = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b")
     
-    results_json = "[]"
+    results_json = "{}"
     try:
         groq_key = getattr(settings, "GROQ_API_KEY", os.getenv("GROQ_API_KEY"))
         from utils.circuit_breaker import groq_cb
@@ -66,7 +108,7 @@ DOCUMENT CONTENT:
         else:
             raise Exception("Using local model")
     except Exception as e:
-        logger.info(f"[Compliance] Using local LLM for risk analysis: {e}")
+        logger.info(f"[Compliance] Using local LLM for two-engine analysis: {e}")
         try:
             resp = requests.post(
                 f"{host}/api/generate",
@@ -74,28 +116,34 @@ DOCUMENT CONTENT:
                 timeout=120
             )
             resp.raise_for_status()
-            results_json = resp.json().get("response", "[]").strip()
+            results_json = resp.json().get("response", "{}").strip()
         except Exception as local_e:
             logger.error(f"[Compliance] Local model failed: {local_e}")
             return
 
     try:
-        # Strip markdown json blocks if any
         if "```json" in results_json:
             results_json = results_json.split("```json")[1].split("```")[0].strip()
         elif "```" in results_json:
             results_json = results_json.split("```")[1].split("```")[0].strip()
             
         data = json.loads(results_json)
-        if isinstance(data, dict):
-            risks = data.get("risks", data.get("findings", []))
-        else:
-            risks = data
+        
+        # 1. Save Compliance Facts
+        facts = data.get("compliance_facts", [])
+        for f in facts:
+            ComplianceCheckResult.objects.create(
+                owner=owner,
+                document_id=document_id,
+                doc_name=doc_name,
+                requirement=f.get("requirement", "Check")[:255],
+                status=f.get("status", "Missing")[:50],
+                description=f.get("description", ""),
+                location=f.get("location", "")[:500]
+            )
             
-        if not isinstance(risks, list):
-            logger.warning("[Compliance] Unexpected JSON format")
-            return
-            
+        # 2. Save Business Risks
+        risks = data.get("business_risks", [])
         for risk in risks:
             if not risk.get("description"): continue
             
@@ -113,8 +161,10 @@ DOCUMENT CONTENT:
                 risk_type=risk.get("type", "Risk")[:100],
                 severity=sev,
                 description=risk.get("description", ""),
-                suggested_fix=risk.get("suggested_fix", "")
+                suggested_fix=risk.get("suggested_fix", ""),
+                location=risk.get("location", "")[:500]
             )
-        logger.info(f"[Compliance] Logged {len(risks)} risks for {document_id}")
+            
+        logger.info(f"[Compliance] Logged {len(facts)} facts and {len(risks)} risks for {document_id}")
     except Exception as e:
         logger.error(f"[Compliance] JSON parse error: {e} - Content: {results_json[:200]}")

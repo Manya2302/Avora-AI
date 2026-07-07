@@ -101,6 +101,21 @@ def process_document_ai(document_id: str):
         document.status = Document.Status.AI_READY
         document.save()
 
+        # ── Document Type Router (Run for Uploaded File) ──
+        from apps.ai.tasks import analyze_compliance_risk_async, analyze_contract_async
+        category = cls_data.get('category', 'other')
+        logger.info(f"[Upload Router] Routing uploaded document {document.id} as {category}")
+        
+        if category in ('contract', 'vendor_agreement', 'legal_agreement'):
+            analyze_contract_async.delay(str(document.id), str(document.owner.id))
+            analyze_compliance_risk_async.delay(str(document.id), str(document.owner.id), document.original_name)
+        elif category in ('policy', 'compliance_report', 'business_license', 'certificate', 'audit_report', 'medical_record', 'financial_report', 'other'):
+            # Run compliance risk for most documents just in case, or specifically as requested.
+            # The user said: "the risk detction is not working perfctyly make it more secure and detecable"
+            # Let's run it for ALL documents to ensure we always detect risks!
+            analyze_compliance_risk_async.delay(str(document.id), str(document.owner.id), document.original_name)
+
+
     except Exception as exc:
         from apps.documents.models import Document
         logger.exception(f"Error processing document {document_id}")

@@ -35,4 +35,6 @@ urlpatterns = [
     # Phase 4
     path('api/copilot/',     include('apps.copilot.urls')),
     path('api/knowledge/',   include('apps.knowledge.urls')),
+    # Enterprise Governance
+    path('api/org/',          include('apps.organizations.urls')),
 ] + swagger_urls + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

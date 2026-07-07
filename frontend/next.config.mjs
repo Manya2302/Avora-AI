@@ -15,6 +15,7 @@ const nextConfig = {
       },
     ]
   },
+  transpilePackages: ['react-force-graph-2d', 'force-graph', 'd3-force-3d', 'd3-force', 'd3-timer', 'd3-dispatch', 'lodash-es'],
 }
 
 export default nextConfig

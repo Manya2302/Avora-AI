@@ -62,7 +62,15 @@ class InitiateUploadView(APIView):
             document=document,
             category=d.get('category', ''),
             department=d.get('department', ''),
+            extra={'graph_processing': d.get('graph_processing', 'ai'), 'industry_edition': d.get('industry_edition', 'generic')}
         )
+
+        # Create default visibility for new documents based on user selection
+        try:
+            from apps.organizations.permissions import ensure_visibility
+            ensure_visibility(document.id, request.user, visibility=d.get('visibility', 'private'))
+        except Exception:
+            pass  # organizations app not fully migrated yet — silent fail
 
         # Generate per-document AES-256 key + RSA-4096 key pair
         private_pem, public_pem = generate_rsa_key_pair(settings.RSA_KEY_SIZE)
@@ -189,13 +197,18 @@ class DocumentViewSet(ModelViewSet):
             
         # Manually cascade delete decoupled intelligence records
         from apps.contracts.models import ContractAnalysis
-        from apps.compliance.models import ComplianceRisk
+        from apps.compliance.models import ComplianceRisk, ComplianceCheckResult, ExpiryAlert, ComplianceTimeline
         from apps.ai.models import DocumentClassification, DocumentOCR
+        from apps.knowledge.models import KnowledgeNode
         
         ContractAnalysis.objects.filter(document_id=doc_id_str).delete()
         ComplianceRisk.objects.filter(document_id=doc_id_str).delete()
+        ComplianceCheckResult.objects.filter(document_id=doc_id_str).delete()
+        ExpiryAlert.objects.filter(document_id=doc_id_str).delete()
+        ComplianceTimeline.objects.filter(document_id=doc_id_str).delete()
         DocumentClassification.objects.filter(document_id=doc_id_str).delete()
         DocumentOCR.objects.filter(document_id=doc_id_str).delete()
+        KnowledgeNode.objects.filter(document_id=doc_id_str).delete()
 
         # Hard delete from local relational DB
         document.delete()
@@ -315,9 +328,8 @@ class DocumentViewSet(ModelViewSet):
         if category in ('contract', 'vendor_agreement', 'legal_agreement'):
             analyze_contract_async.delay(str(document.id), str(request.user.id))
             analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
-        elif category in ('policy', 'compliance_report', 'business_license', 'certificate', 'audit_report'):
-            analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
-        elif category == 'medical_record':
+        else:
+            # Run compliance risk for all other documents to make risk detection more secure and detectable
             analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
 
         return Response({

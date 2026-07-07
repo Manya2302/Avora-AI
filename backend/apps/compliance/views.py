@@ -96,3 +96,21 @@ class RecordCorrectionView(APIView):
         except Exception as e:
             pass
         return Response({"message": "Correction recorded. Thank you for improving Avora AI!"})
+
+class DismissRiskView(APIView):
+    def patch(self, request, pk):
+        from .models import ComplianceRisk
+        try:
+            r = ComplianceRisk.objects.get(pk=pk, owner=request.user)
+            r.is_resolved = True; r.save()
+            return Response({"message": "Risk dismissed."})
+        except: return Response(status=404)
+
+class DismissFactView(APIView):
+    def patch(self, request, pk):
+        from .models import ComplianceCheckResult
+        try:
+            f = ComplianceCheckResult.objects.get(pk=pk, owner=request.user)
+            f.is_ignored = True; f.save()
+            return Response({"message": "Check ignored."})
+        except: return Response(status=404)

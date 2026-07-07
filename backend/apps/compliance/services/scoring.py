@@ -56,65 +56,63 @@ PRIORITY_WEIGHTS = {"critical":40,"high":25,"medium":15,"low":5}
 STATUS_SCORES    = {"compliant":100,"expiring_soon":65,"needs_review":50,"expired":10,"missing":0}
 
 def compute_compliance_score(owner, industry: str) -> dict:
-    from apps.compliance.models import ComplianceProfile, ComplianceRisk
-    from apps.ai.models import DocumentClassification
+    from apps.compliance.models import ComplianceProfile, ComplianceCheckResult, ComplianceRisk
     from apps.documents.models import Document
 
     user_docs = Document.objects.filter(owner=owner, is_deleted=False, status="ai_ready")
     total_docs = user_docs.count()
     
-    # Fetch all dynamic AI risks
-    all_risks = ComplianceRisk.objects.filter(owner=owner)
+    # 1. Compliance Engine (Facts / Checks)
+    all_facts = ComplianceCheckResult.objects.filter(owner=owner, is_ignored=False)
+    total_checks = all_facts.count()
+    missing_facts = all_facts.filter(status__icontains="Missing")
+    present_facts = all_facts.filter(status__icontains="Present")
     
+    missing_count = missing_facts.count()
+    
+    # Dynamic Scoring Logic for Compliance
+    # Base 100, deduct points for missing required clauses
+    if total_checks > 0:
+        compliance_score = max(0, 100 - (missing_count * 10))
+    else:
+        compliance_score = 0 if total_docs > 0 else 100
+        
+    # 2. Risk Engine (Business Impact) -> used only for audit readiness penalty here
+    all_risks = ComplianceRisk.objects.filter(owner=owner, is_resolved=False)
     critical_risks = all_risks.filter(severity="critical").count()
     high_risks = all_risks.filter(severity="high").count()
-    medium_risks = all_risks.filter(severity="medium").count()
-    low_risks = all_risks.filter(severity="low").count()
     
-    total_risks = all_risks.count()
-
-    # Dynamic Scoring Logic
-    # Start at 100, subtract points for each risk
-    penalty = (critical_risks * 15) + (high_risks * 10) + (medium_risks * 5) + (low_risks * 2)
-    compliance_score = max(0, 100 - penalty)
+    # Audit Readiness: 100% minus critical/high risk penalty
+    audit_readiness_pct = max(0, compliance_score - (critical_risks * 15) - (high_risks * 5))
     
-    # Audit Readiness: 100% minus critical risks penalty (heavy)
-    audit_readiness_pct = max(0, 100 - (critical_risks * 25) - (high_risks * 5))
-    
-    # Missing docs can be represented as documents that have critical risks
-    docs_with_critical_risks = Document.objects.filter(id__in=all_risks.filter(severity="critical").values_list('document_id', flat=True))
+    # Format missing docs/clauses list for the dashboard
     missing_list = []
-    for doc in docs_with_critical_risks:
+    for fact in missing_facts:
         missing_list.append({
-            "name": doc.original_name,
-            "priority": "critical",
-            "doc_type": "requires_remediation"
-        })
-        
-    docs_with_high_risks = Document.objects.filter(id__in=all_risks.filter(severity="high").values_list('document_id', flat=True)).exclude(id__in=docs_with_critical_risks.values_list('id', flat=True))
-    for doc in docs_with_high_risks:
-        missing_list.append({
-            "name": doc.original_name,
+            "name": fact.requirement,
             "priority": "high",
-            "doc_type": "requires_attention"
+            "doc_type": fact.doc_name
         })
 
-    # Dummy checks list for UI backwards compatibility but using dynamic data
+    # Format all checks list for the dashboard
     checks = []
     if total_docs == 0:
-        checks.append({"name": "Upload any document to begin", "status": "missing", "priority": "high", "doc_type": "general", "score": 0})
+        checks.append({"id": "0", "name": "Upload any document to begin", "status": "missing", "priority": "high", "doc_type": "general", "score": 0, "location": "", "description": ""})
     else:
-        for risk in all_risks:
+        for fact in all_facts:
             checks.append({
-                "name": risk.compliance_standard + " - " + risk.risk_type,
-                "status": "needs_review",
-                "priority": risk.severity,
-                "doc_type": "ai_finding",
-                "score": 0
+                "id": str(fact.id),
+                "name": fact.requirement,
+                "status": "missing" if "missing" in fact.status.lower() else "compliant",
+                "priority": "medium",
+                "doc_type": fact.doc_name,
+                "score": 0 if "missing" in fact.status.lower() else 100,
+                "location": fact.location,
+                "description": fact.description
             })
             
     # Add a pseudo "Compliant" check if score is high
-    if compliance_score >= 80:
+    if compliance_score >= 80 and total_checks > 0:
         checks.append({"name": "General Compliance Posture", "status": "compliant", "priority": "low", "doc_type": "general", "score": 100})
 
     try:
@@ -129,9 +127,9 @@ def compute_compliance_score(owner, industry: str) -> dict:
     return {
         "score": compliance_score, 
         "audit_readiness": audit_readiness_pct,
-        "total_checks": total_risks if total_risks > 0 else 1, 
-        "compliant": 1 if compliance_score >= 80 else 0,
-        "missing_count": len(missing_list), 
+        "total_checks": total_checks if total_checks > 0 else 1, 
+        "compliant": present_facts.count(),
+        "missing_count": missing_count, 
         "critical_missing": critical_risks,
         "checks": checks, 
         "missing": missing_list,

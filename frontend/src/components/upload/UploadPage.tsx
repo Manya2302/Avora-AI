@@ -1,13 +1,14 @@
 'use client'
-import { useCallback, useState } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { CloudUpload, X, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
 import Button from '@/components/shared/Button'
-import { documentsApi } from '@/lib/api'
+import { documentsApi, orgApi } from '@/lib/api'
 import { formatBytes } from '@/lib/utils'
 import { useUploadStore } from '@/store/uploadStore'
+import GraphRecommendationCard from '@/components/knowledge/GraphRecommendationCard'
 
 const ALLOWED = ['.pdf','.docx','.doc','.xlsx','.xls','.png','.jpg','.jpeg','.txt']
 const MAX_SIZE = 5 * 1024 * 1024 * 1024
@@ -27,6 +28,15 @@ export default function UploadPage() {
   const { queue, addToQueue, updateProgress, clearQueue } = useUploadStore()
   const [category, setCategory] = useState('Auto-detect (Orivo AI)')
   const [department, setDepartment] = useState('')
+  const [visibility, setVisibility] = useState('private')
+  const [graphProcessing, setGraphProcessing] = useState('ai')
+  const [industry, setIndustry] = useState('generic')
+  const [departments, setDepartments] = useState<any[]>([])
+  const [uploadedDocs, setUploadedDocs] = useState<Array<{id: string, name: string}>>([])
+
+  useEffect(() => {
+    orgApi.departments().then(r => setDepartments(r.data.results || r.data || [])).catch(() => {})
+  }, [])
 
   const uploadFile = async (file: File) => {
     const docId = `temp-${Date.now()}`
@@ -36,6 +46,8 @@ export default function UploadPage() {
       const { data: init } = await documentsApi.initiateUpload({
         file_name: file.name, file_size: file.size,
         mime_type: file.type, category, department,
+        visibility, graph_processing: graphProcessing,
+        industry_edition: industry,
       })
       updateProgress(docId, { documentId: init.document_id, totalChunks: init.total_chunks })
 
@@ -58,6 +70,7 @@ export default function UploadPage() {
       }
       updateProgress(init.document_id, { status: 'done' })
       toast.success(`${file.name} uploaded & encrypted!`)
+      setUploadedDocs(p => [...p, { id: init.document_id, name: file.name }])
     } catch (e: any) {
       updateProgress(docId, { status: 'error', error: e?.response?.data?.error || 'Upload failed' })
       toast.error(`Failed: ${file.name}`)
@@ -130,6 +143,20 @@ export default function UploadPage() {
               </div>
             )}
           </Card>
+
+          {/* Graph Recommendations for uploaded docs */}
+          {uploadedDocs.length > 0 && (
+            <div className="mt-5 space-y-4">
+              {uploadedDocs.map(doc => (
+                <GraphRecommendationCard 
+                  key={doc.id} 
+                  documentId={doc.id} 
+                  docName={doc.name} 
+                  onDone={() => setUploadedDocs(p => p.filter(d => d.id !== doc.id))}
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Settings */}
@@ -145,9 +172,42 @@ export default function UploadPage() {
                 </select>
               </div>
               <div>
+                <label className="text-xs font-semibold text-[#0E0D0A] mb-1.5 block">Industry Edition</label>
+                <select value={industry} onChange={e => setIndustry(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light text-[#0E0D0A] outline-none focus:border-[#1A3DAF]">
+                  <option value="generic">Generic (General Enterprise)</option>
+                  <option value="healthcare">Healthcare (HIPAA, Medical Docs)</option>
+                  <option value="legal">Legal (Contracts, Clauses, Risk)</option>
+                  <option value="finance">Finance (AML, KYC, Regulatory)</option>
+                  <option value="manufacturing">Manufacturing (SOP, ISO)</option>
+                  <option value="government">Government (Records, Audits)</option>
+                </select>
+              </div>
+              <div>
                 <label className="text-xs font-semibold text-[#0E0D0A] mb-1.5 block">Department</label>
-                <input value={department} onChange={e => setDepartment(e.target.value)} placeholder="Finance, Legal, HR…"
-                  className="w-full px-3 py-2 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light text-[#0E0D0A] outline-none focus:border-[#1A3DAF] placeholder:text-[#9B9890]" />
+                <select value={department} onChange={e => setDepartment(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light text-[#0E0D0A] outline-none focus:border-[#1A3DAF]">
+                  <option value="">No Department</option>
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#0E0D0A] mb-1.5 block">Visibility</label>
+                <select value={visibility} onChange={e => setVisibility(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light text-[#0E0D0A] outline-none focus:border-[#1A3DAF]">
+                  <option value="private">Private (Only Me)</option>
+                  <option value="department">Department</option>
+                  <option value="organization">Organization (Everyone)</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#0E0D0A] mb-1.5 block">Graph Processing</label>
+                <select value={graphProcessing} onChange={e => setGraphProcessing(e.target.value)}
+                  className="w-full px-3 py-2 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light text-[#0E0D0A] outline-none focus:border-[#1A3DAF]">
+                  <option value="ai">AI Decide (Recommended)</option>
+                  <option value="always">Always Add to Graph</option>
+                  <option value="never">Never Add to Graph</option>
+                </select>
               </div>
               <div className="pt-2 border-t border-[#ECEAE4] space-y-3">
                 {[['ZSTD Level 9 Compression','true'],['AES-256-GCM Encryption','true'],['RSA-4096 Key Wrapping','true'],['Orivo AI Processing','true'],['SHA-256 Integrity Hash','true']].map(([label, on]) => (
@@ -164,3 +224,4 @@ export default function UploadPage() {
     </div>
   )
 }
+

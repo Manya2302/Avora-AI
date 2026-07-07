@@ -7,20 +7,8 @@ import type { Conversation, DocSource } from '@/types'
 import { cn } from '@/lib/utils'
 import toast from 'react-hot-toast'
 
-const MODES = [
-  { key:'document',   label:'Document Assistant',   icon:FileText,      desc:'Answer questions from your documents' },
-  { key:'compliance', label:'Compliance Assistant',  icon:Shield,        desc:'Compliance status and gap analysis' },
-  { key:'audit',      label:'Audit Assistant',       icon:BookOpen,      desc:'Prepare audit evidence' },
-  { key:'knowledge',  label:'Knowledge Assistant',   icon:Brain,         desc:'Search organizational knowledge' },
-  { key:'risk',       label:'Risk Assistant',        icon:AlertTriangle, desc:'Identify potential risks' },
-]
-
 const SUGGESTED: Record<string,string[]> = {
-  document:   ['Find all vendor contracts signed in 2024','Show invoices above ₹5,00,000','Summarize HR policies'],
-  compliance: ['Are we audit ready?','What documents are missing?','Summarize compliance risks'],
-  audit:      ['Prepare audit evidence for ISO review','What evidence do we have for GST compliance?','List all audit reports'],
-  knowledge:  ['Show all agreements with Vendor X','Which employees have incomplete records?','What projects involved our top vendor?'],
-  risk:       ['Show contracts expiring next quarter','Which contracts have unlimited liability?','Summarize all vendor risks'],
+  document:   ['Find all vendor contracts signed in 2024','Show invoices above ₹5,00,000','Summarize HR policies', 'Are we audit ready?', 'Show contracts expiring next quarter'],
 }
 
 interface Msg {
@@ -31,6 +19,8 @@ interface Msg {
   sources?: DocSource[]
   flags?: string[]
   pending?: boolean
+  activeAgent?: string
+  agentReason?: string
 }
 
 export default function CopilotPage() {
@@ -39,8 +29,9 @@ export default function CopilotPage() {
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
 
-  const [mode, setMode]           = useState('document')
-  const [showModeMenu, setShowMM] = useState(false)
+  const [activeAgent, setActiveAgent] = useState('Coordinator Agent')
+  const [agentReason, setAgentReason] = useState('Ready to route your request.')
+
   const [convId, setConvId]       = useState<string | null>(params.get('conv'))
   const [msgs, setMsgs]           = useState<Msg[]>([])
   const [input, setInput]         = useState('')
@@ -53,10 +44,10 @@ export default function CopilotPage() {
     if (convId) {
       copilotApi.conversation(convId).then(r => {
         const conv = r.data
-        setMode(conv.mode)
         setMsgs((conv.messages || []).map((m: any) => ({
           id: m.id, role: m.role, content: m.content,
           confidence: m.confidence_score, sources: m.references,
+          activeAgent: m.activeAgent, agentReason: m.agentReason,
         })))
       }).catch(() => {})
     }
@@ -70,11 +61,17 @@ export default function CopilotPage() {
     setMsgs(p => [...p, userMsg, pendingMsg])
     setInput(''); setLoading(true)
     try {
-      const { data } = await copilotApi.query({ question:text, conversation_id:convId, mode })
+      const { data } = await copilotApi.query({ question:text, conversation_id:convId, mode: 'document' })
       if (!convId) setConvId(data.conversation_id)
+      
+      const newAgent = data.active_agent || 'Search Agent'
+      setActiveAgent(newAgent)
+      setAgentReason(data.agent_reason || '')
+
       setMsgs(p => p.filter(m => m.id !== 'pending').concat({
         id: data.message_id, role:'assistant', content: data.answer,
         confidence: data.confidence, sources: data.sources, flags: data.hallucination_flags,
+        activeAgent: newAgent, agentReason: data.agent_reason,
       }))
     } catch (e) {
       setMsgs(p => p.filter(m => m.id !== 'pending').concat({
@@ -85,8 +82,8 @@ export default function CopilotPage() {
     } finally { setLoading(false) }
   }
 
-  const newChat = () => { setConvId(null); setMsgs([]); setInput('') }
-  const currentMode = MODES.find(m => m.key === mode)!
+  const newChat = () => { setConvId(null); setMsgs([]); setInput(''); setActiveAgent('Coordinator Agent'); setAgentReason('Ready to route your request.') }
+
 
   const confColor = (c?: number) => !c ? 'gray' : c >= 0.75 ? 'green' : c >= 0.5 ? 'amber' : 'red'
   const confLabel = (c?: number) => !c ? '—' : c >= 0.75 ? 'High confidence' : c >= 0.5 ? 'Medium confidence' : 'Low confidence'
@@ -103,28 +100,15 @@ export default function CopilotPage() {
           <p className="text-xs text-[#9B9890]">Enterprise Knowledge Assistant</p>
         </div>
 
-        {/* Mode switcher */}
-        <div className="relative">
-          <button onClick={() => setShowMM(!showModeMenu)}
-            className="flex items-center gap-2 px-3 py-2 bg-white border border-[#DDD9D0] rounded-[9px] text-xs font-medium text-[#5A5750] hover:border-[#1A3DAF]/40 transition-all">
-            <currentMode.icon className="w-3.5 h-3.5 text-[#1A3DAF]"/>
-            {currentMode.label}
-            <ChevronDown className="w-3 h-3"/>
-          </button>
-          {showModeMenu && (
-            <div className="absolute top-full right-0 mt-1 w-64 bg-white border border-[#DDD9D0] rounded-[11px] shadow-lg z-20 overflow-hidden">
-              {MODES.map(m => (
-                <button key={m.key} onClick={() => { setMode(m.key); setShowMM(false) }}
-                  className={cn('w-full flex items-start gap-3 px-3.5 py-3 hover:bg-[#F7F5F0] transition-colors text-left', mode===m.key && 'bg-[#EBF0FF]')}>
-                  <m.icon className={cn('w-4 h-4 flex-shrink-0 mt-0.5', mode===m.key ? 'text-[#1A3DAF]' : 'text-[#9B9890]')}/>
-                  <div>
-                    <p className={cn('text-[13px] font-medium', mode===m.key ? 'text-[#1A3DAF]' : 'text-[#0E0D0A]')}>{m.label}</p>
-                    <p className="text-[11px] text-[#9B9890]">{m.desc}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Dynamic Agent Badge */}
+        <div className="relative group flex items-center gap-2 px-3 py-1.5 bg-[#F0FDF4] border border-[#16A34A]/20 rounded-full cursor-help">
+          <div className="w-2 h-2 rounded-full bg-[#16A34A] animate-pulse"/>
+          <span className="text-[12px] font-semibold text-[#16A34A]">{activeAgent}</span>
+          
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-3 bg-[#0E0D0A] text-white text-xs rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-20">
+            <p className="font-semibold mb-1">Agent Reasoning</p>
+            <p className="text-white/70 font-light">{agentReason}</p>
+          </div>
         </div>
 
         <button onClick={newChat} className="flex items-center gap-1.5 px-3 py-2 bg-[#0E0D0A] text-white rounded-[9px] text-xs font-medium hover:bg-[#252318] transition-colors">
@@ -140,12 +124,12 @@ export default function CopilotPage() {
         {msgs.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center py-10">
             <div className="w-16 h-16 bg-gradient-to-br from-[#EBF0FF] to-[#F0FDF4] rounded-2xl flex items-center justify-center mb-4 border border-[#1A3DAF]/10">
-              <currentMode.icon className="w-7 h-7 text-[#1A3DAF]"/>
+              <Brain className="w-7 h-7 text-[#1A3DAF]"/>
             </div>
-            <h3 className="font-display text-xl font-semibold text-[#0E0D0A] mb-2">{currentMode.label}</h3>
-            <p className="text-sm text-[#9B9890] mb-7 max-w-md">{currentMode.desc}. Ask in plain language — every answer is grounded in your actual documents with source citations.</p>
+            <h3 className="font-display text-xl font-semibold text-[#0E0D0A] mb-2">Avora Coordinator</h3>
+            <p className="text-sm text-[#9B9890] mb-7 max-w-md">I will automatically route your question to the best specialized AI Agent (Finance, Legal, Security, etc.)</p>
             <div className="grid grid-cols-1 gap-2 w-full max-w-lg">
-              {SUGGESTED[mode].map(q => (
+              {SUGGESTED['document'].map(q => (
                 <button key={q} onClick={() => send(q)}
                   className="text-left p-3 bg-white border border-[#DDD9D0] rounded-[11px] text-[13px] font-medium text-[#5A5750] hover:border-[#1A3DAF]/40 hover:bg-[#EBF0FF] hover:text-[#1A3DAF] transition-all flex items-center gap-2.5">
                   <Sparkles className="w-3.5 h-3.5 flex-shrink-0 opacity-60"/> {q}
@@ -155,14 +139,30 @@ export default function CopilotPage() {
           </div>
         )}
 
-        {msgs.map(m => (
-          <div key={m.id} className={cn('flex gap-3', m.role==='user' ? 'justify-end' : 'justify-start')}>
-            {m.role==='assistant' && (
-              <div className="w-7 h-7 bg-gradient-to-br from-[#1A3DAF] to-[#7B9FE8] rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Sparkles className="w-3.5 h-3.5 text-white"/>
+        {msgs.map((m, index) => {
+          const prevAgent = index > 0 ? msgs[index - 1]?.activeAgent : 'Coordinator Agent'
+          const agentSwitched = m.role === 'assistant' && m.activeAgent && m.activeAgent !== prevAgent
+
+          return (
+          <div key={m.id} className="flex flex-col gap-3">
+            {agentSwitched && (
+              <div className="flex flex-col items-center justify-center my-4 space-y-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] font-semibold text-[#9B9890]">{prevAgent || 'Coordinator Agent'}</span>
+                  <span className="text-[#9B9890]">↓</span>
+                  <span className="text-[11px] font-semibold text-[#1A3DAF] bg-[#EBF0FF] px-2 py-1 rounded-full">{m.activeAgent}</span>
+                </div>
+                {m.agentReason && <span className="text-[10px] text-[#9B9890] bg-[#F7F5F0] px-3 py-1 rounded-full border border-[#ECEAE4]">Reason: {m.agentReason}</span>}
               </div>
             )}
-            <div className={cn('max-w-[78%]', m.role==='user' ? '' : 'flex-1')}>
+            
+            <div className={cn('flex gap-3', m.role==='user' ? 'justify-end' : 'justify-start')}>
+              {m.role==='assistant' && (
+                <div className="w-7 h-7 bg-gradient-to-br from-[#1A3DAF] to-[#7B9FE8] rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Sparkles className="w-3.5 h-3.5 text-white"/>
+                </div>
+              )}
+              <div className={cn('max-w-[78%]', m.role==='user' ? '' : 'flex-1')}>
               <div className={cn('rounded-[14px] px-4 py-3',
                 m.role==='user' ? 'bg-[#0E0D0A] text-white rounded-br-[4px]' : 'bg-white border border-[#DDD9D0] text-[#0E0D0A] rounded-bl-[4px]')}>
                 {m.pending ? (
@@ -231,7 +231,8 @@ export default function CopilotPage() {
               )}
             </div>
           </div>
-        ))}
+          </div>
+        )})}
         <div ref={bottomRef}/>
       </div>
 
@@ -239,7 +240,7 @@ export default function CopilotPage() {
       <div className="mt-4 flex items-end gap-3 p-3 bg-white border border-[#DDD9D0] rounded-[14px] focus-within:border-[#1A3DAF] focus-within:ring-2 focus-within:ring-[#1A3DAF]/8 transition-all">
         <textarea ref={inputRef} value={input} onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
-          placeholder={`Ask ${currentMode.label.toLowerCase()} anything about your documents…`}
+          placeholder={`Ask the coordinator anything about your documents…`}
           rows={1} className="flex-1 bg-transparent border-none outline-none text-[14px] font-light text-[#0E0D0A] placeholder:text-[#9B9890] resize-none max-h-32"/>
         <button onClick={() => send()} disabled={!input.trim() || loading}
           className="w-9 h-9 bg-[#0E0D0A] rounded-[9px] flex items-center justify-center flex-shrink-0 hover:bg-[#1A3DAF] disabled:opacity-40 disabled:cursor-not-allowed transition-colors">

@@ -124,10 +124,29 @@ class ComplianceRisk(models.Model):
     
     description = models.TextField()
     suggested_fix = models.TextField()
+    location = models.CharField(max_length=500, blank=True, help_text="Where the problem is located in the text")
     
     is_resolved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
         db_table = "compliance_risks"
+        ordering = ["-created_at"]
+
+class ComplianceCheckResult(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="compliance_check_results")
+    document_id = models.UUIDField(db_index=True)
+    doc_name = models.CharField(max_length=500)
+    
+    requirement = models.CharField(max_length=255, help_text="e.g., GDPR, HIPAA, Encryption Clause")
+    status = models.CharField(max_length=50, help_text="Present or Missing")
+    description = models.TextField()
+    location = models.CharField(max_length=500, blank=True, help_text="Where in the document this should be or was found")
+    
+    is_ignored = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = "compliance_check_results"
         ordering = ["-created_at"]

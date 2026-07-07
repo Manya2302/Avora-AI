@@ -1,23 +1,28 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, FileText, Upload, Search, ClipboardList, User, Settings, Shield, LogOut, Folder, Sparkles, CheckSquare, FileSignature, AlertTriangle, MessageSquare, Network, LayoutGrid } from 'lucide-react'
+import { LayoutDashboard, FileText, Upload, Search, ClipboardList, User, Settings, Shield, LogOut, Folder, Sparkles, CheckSquare, FileSignature, AlertTriangle, MessageSquare, Network, LayoutGrid, Building2 } from 'lucide-react'
 import { cn, getInitials } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 
-const nav = [
+import { useEffect, useState } from 'react'
+import { documentsApi, complianceApi, contractsApi } from '@/lib/api'
+
+// We will map dynamic badges to these keys instead of hardcoding
+const nav_template = [
   { href:'/dashboard',    label:'Dashboard',          icon:LayoutDashboard, group:'main' },
-  { href:'/documents',    label:'Documents',           icon:FileText,        group:'main', badge:'1,284' },
+  { href:'/documents',    label:'Documents',           icon:FileText,        group:'main', dynKey: 'documents' },
   { href:'/upload',       label:'Upload',              icon:Upload,          group:'main' },
   { href:'/search',       label:'AI Search',           icon:Search,          group:'main' },
-  { href:'/collections',  label:'Smart Collections',   icon:Folder,          group:'ai',  tag:'P2' },
-  { href:'/analytics',    label:'AI Activity',         icon:Sparkles,        group:'ai',  tag:'P2' },
-  { href:'/compliance',   label:'Compliance',          icon:CheckSquare,     group:'compliance', tag:'P3' },
-  { href:'/contracts',    label:'Contracts',           icon:FileSignature,   group:'compliance', tag:'P3' },
-  { href:'/risk',         label:'Risk Dashboard',      icon:AlertTriangle,   group:'compliance', tag:'P3' },
-  { href:'/copilot',      label:'Avora Copilot',       icon:Sparkles,        group:'copilot', tag:'P4' },
-  { href:'/copilot/workspace', label:'AI Workspace',   icon:LayoutGrid,      group:'copilot', tag:'P4' },
-  { href:'/knowledge',    label:'Knowledge Explorer',  icon:Network,         group:'copilot', tag:'P4' },
+  { href:'/collections',  label:'Smart Collections',   icon:Folder,          group:'ai' },
+  { href:'/analytics',    label:'AI Activity',         icon:Sparkles,        group:'ai' },
+  { href:'/compliance',   label:'Compliance',          icon:CheckSquare,     group:'compliance', dynKey: 'compliance' },
+  { href:'/contracts',    label:'Contracts',           icon:FileSignature,   group:'compliance', dynKey: 'contracts' },
+  { href:'/risk',         label:'Risk Dashboard',      icon:AlertTriangle,   group:'compliance', dynKey: 'risks' },
+  { href:'/copilot',      label:'Avora Copilot',       icon:Sparkles,        group:'copilot' },
+  { href:'/copilot/workspace', label:'AI Workspace',   icon:LayoutGrid,      group:'copilot' },
+  { href:'/knowledge',    label:'Knowledge Explorer',  icon:Network,         group:'copilot' },
+  { href:'/organization', label:'Organization',         icon:Building2,       group:'governance' },
   { href:'/audit-logs',   label:'Audit Logs',          icon:ClipboardList,   group:'security' },
   { href:'/profile',      label:'Profile',             icon:User,            group:'account' },
   { href:'/settings',     label:'Settings',            icon:Settings,        group:'account' },
@@ -27,6 +32,7 @@ const groups = [
   { key:'ai',         label:'AI · Phase 2' },
   { key:'compliance', label:'Compliance · Phase 3' },
   { key:'copilot',    label:'Copilot · Phase 4' },
+  { key:'governance',  label:'Governance' },
   { key:'security',   label:'Security' },
   { key:'account',    label:'Account' },
 ]
@@ -39,6 +45,58 @@ const TAG_COLORS: Record<string,string> = {
 export default function Sidebar() {
   const pathname = usePathname()
   const { user, logout } = useAuthStore()
+  
+  const [stats, setStats] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    if (!user) return;
+    
+    // Fetch dynamic stats for the sidebar badges
+    const fetchStats = async () => {
+      try {
+        const [docsRes, compRes, conRes] = await Promise.all([
+          documentsApi.list({ limit: 1 }).catch(()=>null),
+          complianceApi.dashboard().catch(()=>null),
+          contractsApi.list({ limit: 1 }).catch(()=>null)
+        ])
+        
+        const newStats: Record<string, number> = {}
+        if (docsRes?.data) newStats.documents = docsRes.data.count ?? docsRes.data.length ?? 0
+        if (compRes?.data) {
+          newStats.risks = compRes.data.recent_risks?.length || 0
+          newStats.compliance = compRes.data.missing_docs || 0
+        }
+        if (conRes?.data) newStats.contracts = conRes.data.count ?? conRes.data.length ?? 0
+        
+        setStats(newStats)
+      } catch (err) {
+        console.error('Failed to fetch sidebar stats', err)
+      }
+    }
+    
+    fetchStats()
+    
+    // Poll every 10 seconds to keep stats updated when files are uploaded/processed
+    const interval = setInterval(fetchStats, 10000)
+    
+    return () => clearInterval(interval)
+  }, [user])
+
+  // Merge dynamic stats into nav
+  const nav = nav_template.map(item => {
+    if (item.dynKey) {
+      const val = stats[item.dynKey]
+      // Always show badge for documents. For others, show if > 0.
+      if (item.dynKey === 'documents' && val !== undefined) {
+        return { ...item, badge: val.toString() }
+      }
+      if (val > 0) {
+        return { ...item, badge: val.toString() }
+      }
+    }
+    return item
+  })
+
   return (
     <aside className="w-[228px] min-w-[228px] bg-[#0C0B09] flex flex-col overflow-hidden">
       <div className="px-4 py-4 flex items-center gap-2.5 border-b border-white/5">

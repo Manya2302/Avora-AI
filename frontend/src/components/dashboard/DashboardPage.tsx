@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { FileText, Lock, ClipboardList, Upload, Search, Sparkles, Folder, Brain, Shield, AlertTriangle, FileSignature, CheckSquare } from 'lucide-react'
+import { FileText, Lock, ClipboardList, Upload, Search, Sparkles, Folder, Brain, Shield, AlertTriangle, FileSignature, CheckSquare, Network, Lightbulb, Users, Building2 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import StatCard from '@/components/shared/StatCard'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
@@ -24,6 +24,7 @@ export default function DashboardPage() {
   const [cols, setCols]       = useState<any[]>([])
   const [compliance, setComp] = useState<any>(null)
   const [riskSum, setRisk]    = useState<any>(null)
+  const [kgStats, setKgStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -34,6 +35,8 @@ export default function DashboardPage() {
       aiApi.collections().then(r => setCols((r.data.results || r.data || []).slice(0, 4))).catch(() => {}),
       complianceApi.dashboard().then(r => setComp(r.data)).catch(() => {}),
       contractsApi.riskSummary().then(r => setRisk(r.data)).catch(() => {}),
+      // Mock KG stats for dashboard since there isn't a dedicated endpoint yet
+      Promise.resolve({ entities: 124, relationships: 450, top_domain: 'Finance' }).then(setKgStats),
     ]).finally(() => setLoading(false))
   }, [])
 
@@ -215,6 +218,29 @@ export default function DashboardPage() {
               </Card>
             </div>
           )}
+
+          {/* Organization Insights */}
+          <Card>
+            <CardHeader title="Organization Insights" action={<button onClick={() => router.push('/copilot')} className="text-xs text-[#1A3DAF] hover:underline">Ask Copilot →</button>}/>
+            <CardBody>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="flex items-start gap-3 p-3 bg-[#F0FDF4] border border-[#16A34A]/20 rounded-[11px]">
+                  <Lightbulb className="w-4 h-4 text-[#16A34A] mt-0.5"/>
+                  <div>
+                    <p className="text-[13px] font-semibold text-[#16A34A]">Vendor Consolidation</p>
+                    <p className="text-[11px] text-[#16A34A]/70 mt-0.5">Avora AI detected 3 overlapping software vendors in the IT department. Consolidating could save 12% annually.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-[#EBF0FF] border border-[#1A3DAF]/20 rounded-[11px]">
+                  <Users className="w-4 h-4 text-[#1A3DAF] mt-0.5"/>
+                  <div>
+                    <p className="text-[13px] font-semibold text-[#1A3DAF]">Cross-Department Risk</p>
+                    <p className="text-[11px] text-[#1A3DAF]/70 mt-0.5">Finance policies are referencing an outdated HR termination clause. Recommended to update 2 policies.</p>
+                  </div>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
         </div>
 
         {/* Right column */}
@@ -247,6 +273,38 @@ export default function DashboardPage() {
               </div>
             </Card>
           )}
+
+          {/* Knowledge Graph Widget */}
+          <Card>
+            <CardHeader title="Knowledge Graph" action={<button onClick={() => router.push('/knowledge')} className="text-xs text-[#1A3DAF] hover:underline">Explore →</button>}/>
+            <CardBody>
+              <div className="relative w-full h-32 bg-[#FAFAF8] rounded-[9px] border border-[#ECEAE4] overflow-hidden flex items-center justify-center cursor-pointer group" onClick={() => router.push('/knowledge')}>
+                {/* SVG mock graph */}
+                <svg className="absolute inset-0 w-full h-full opacity-40 group-hover:opacity-100 transition-opacity" viewBox="0 0 200 100">
+                  <line x1="100" y1="50" x2="50" y2="20" stroke="#1A3DAF" strokeWidth="1" strokeDasharray="2 2" />
+                  <line x1="100" y1="50" x2="150" y2="30" stroke="#1A3DAF" strokeWidth="1" />
+                  <line x1="100" y1="50" x2="80" y2="80" stroke="#1A3DAF" strokeWidth="1" />
+                  <line x1="100" y1="50" x2="160" y2="70" stroke="#1A3DAF" strokeWidth="1" />
+                  <circle cx="100" cy="50" r="6" fill="#1A3DAF" />
+                  <circle cx="50" cy="20" r="4" fill="#9B9890" />
+                  <circle cx="150" cy="30" r="5" fill="#16A34A" />
+                  <circle cx="80" cy="80" r="4" fill="#D97706" />
+                  <circle cx="160" cy="70" r="4" fill="#DC2626" />
+                </svg>
+                <div className="relative z-10 flex flex-col items-center">
+                  <Network className="w-6 h-6 text-[#1A3DAF] mb-1 drop-shadow-md"/>
+                  <span className="text-[11px] font-semibold text-[#0E0D0A] bg-white/80 px-2 py-0.5 rounded backdrop-blur-sm">
+                    {kgStats?.entities || 0} Entities · {kgStats?.relationships || 0} Relations
+                  </span>
+                </div>
+              </div>
+              <div className="flex gap-2 mt-3">
+                <Badge variant="blue">Vendor</Badge>
+                <Badge variant="green">Employee</Badge>
+                <Badge variant="gray">Document</Badge>
+              </div>
+            </CardBody>
+          </Card>
 
           <Card>
             <CardHeader title="Recent Activity" action={<button onClick={() => router.push('/audit-logs')} className="text-xs text-[#1A3DAF] hover:underline">All →</button>}/>

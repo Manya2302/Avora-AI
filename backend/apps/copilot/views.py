@@ -99,6 +99,8 @@ class CopilotQueryView(APIView):
             "latency_ms":      result.get("latency_ms", 0),
             "hallucination_flags": result.get("hallucination_flags", []),
             "mode":            mode,
+            "active_agent":    result.get("active_agent", "Search Agent"),
+            "agent_reason":    result.get("agent_reason", ""),
         })
 
     def _new_conversation(self, user, mode, question):

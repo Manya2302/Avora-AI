@@ -17,7 +17,7 @@ export default function ComplianceDashboard() {
   const [data, setData]       = useState<CD | null>(null)
   const [loading, setLoading] = useState(true)
   const [scanning, setScan]   = useState(false)
-  const [tab, setTab]         = useState<'overview'|'checks'|'timeline'>('overview')
+  const [tab, setTab]         = useState<'overview'|'checks'|'timeline'|'ai_risks'>('overview')
 
   const load = () => { complianceApi.dashboard().then(r => setData(r.data)).catch(()=>{}).finally(()=>setLoading(false)) }
   useEffect(() => { load() }, [])
@@ -148,13 +148,33 @@ export default function ComplianceDashboard() {
             <CardHeader title="All Compliance Checks" action={<span className="font-mono text-[10px] text-[#9B9890]">{data.checks?.length} checks</span>}/>
             <div className="divide-y divide-[#ECEAE4]">
               {data.checks?.map((c,i)=>(
-                <div key={i} className="flex items-center gap-3 px-5 py-2.5 hover:bg-[#F7F5F0]">
-                  {c.status==='compliant'
-                    ? <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0"/>
-                    : <FileX className="w-4 h-4 text-red-400 flex-shrink-0"/>}
-                  <span className="text-sm text-[#0E0D0A] flex-1">{c.name}</span>
-                  <Badge variant={PV[c.priority]}>{c.priority}</Badge>
-                  <Badge variant={SV[c.status]||'gray'}>{c.status.replace('_',' ')}</Badge>
+                <div key={i} className="px-5 py-4 hover:bg-[#F7F5F0]">
+                  <div className="flex items-center gap-3 mb-2">
+                    {c.status==='compliant'
+                      ? <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0"/>
+                      : <FileX className="w-4 h-4 text-red-400 flex-shrink-0"/>}
+                    <span className="text-sm text-[#0E0D0A] font-medium flex-1">{c.name}</span>
+                    <Badge variant={PV[c.priority]}>{c.priority}</Badge>
+                    <Badge variant={SV[c.status]||'gray'}>{c.status.replace('_',' ')}</Badge>
+                    {c.id && c.id !== "0" && (
+                      <button onClick={async () => {
+                        await complianceApi.dismissFact(c.id);
+                        toast.success("Check ignored.");
+                        load();
+                      }} className="text-xs text-[#9B9890] hover:text-[#1A3DAF] ml-2 font-medium transition-colors">
+                        Ignore
+                      </button>
+                    )}
+                  </div>
+                  {c.description && (
+                    <p className="text-[13px] text-[#5A5750] ml-7 mb-2">{c.description}</p>
+                  )}
+                  {c.location && (
+                    <p className="text-xs font-mono text-amber-800 bg-amber-50 p-2 rounded border border-amber-200 ml-7">
+                      <strong className="block text-amber-900 mb-1 uppercase tracking-wide text-[10px]">Location / Snippet</strong>
+                      {c.location}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -178,6 +198,7 @@ export default function ComplianceDashboard() {
             ) : <CardBody className="text-center py-10 text-sm text-[#9B9890]">No upcoming compliance events.</CardBody>}
           </Card>
         )}
+        
       </>)}
     </div>
   )

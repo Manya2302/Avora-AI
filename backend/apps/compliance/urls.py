@@ -12,4 +12,6 @@ urlpatterns = [
     path("copilot/history/",          views.CopilotHistoryView.as_view(),        name="compliance-copilot-history"),
     path("timeline/",                 views.ComplianceTimelineView.as_view(),    name="compliance-timeline"),
     path("training/correction/",      views.RecordCorrectionView.as_view(),      name="compliance-correction"),
+    path("risk/<uuid:pk>/dismiss/",   views.DismissRiskView.as_view(),           name="compliance-dismiss-risk"),
+    path("fact/<uuid:pk>/dismiss/",   views.DismissFactView.as_view(),           name="compliance-dismiss-fact"),
 ]

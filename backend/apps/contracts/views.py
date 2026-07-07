@@ -106,16 +106,21 @@ class ContractRiskSummaryView(APIView):
             })
 
         from apps.contracts.models import ContractRisk
-        # Count actual individual risks across all contracts for the user
+        from apps.compliance.models import ComplianceRisk
+        # Count actual individual risks across all contracts and compliance scans for the user
         all_contract_risks = ContractRisk.objects.filter(contract__owner=request.user)
+        all_compliance_risks = ComplianceRisk.objects.filter(owner=request.user)
+        
+        def count_sev(sev):
+            return all_contract_risks.filter(severity=sev).count() + all_compliance_risks.filter(severity=sev).count()
         
         return Response({
             "total":       qs.count(),
-            "total_risks": all_contract_risks.count(),
-            "critical":    all_contract_risks.filter(severity="critical").count(),
-            "high":        all_contract_risks.filter(severity="high").count(),
-            "medium":      all_contract_risks.filter(severity="medium").count(),
-            "low":         all_contract_risks.filter(severity="low").count(),
+            "total_risks": all_contract_risks.count() + all_compliance_risks.count(),
+            "critical":    count_sev("critical"),
+            "high":        count_sev("high"),
+            "medium":      count_sev("medium"),
+            "low":         count_sev("low"),
             "expiring_30": expiring_upcoming.count(), # keeping the key name for frontend compatibility but logic is 90 days
             "expired":     expired.count(),
             "auto_renewal":qs.filter(auto_renewal=True).count(),

@@ -1,5 +1,6 @@
 'use client'
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
+import dynamic from 'next/dynamic'
 import { Network, RefreshCw, Search, Building2, FileText, Users, FolderOpen } from 'lucide-react'
 import { knowledgeApi } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
@@ -13,6 +14,8 @@ const TYPE_COLOR: Record<string,string> = {
   project:'#EA580C', document:'#6B7280',
 }
 const TYPE_ICON: Record<string,any> = { vendor:Building2, customer:Users, document:FileText, department:FolderOpen }
+
+const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false })
 
 export default function KnowledgeExplorer() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -31,42 +34,12 @@ export default function KnowledgeExplorer() {
     catch { toast.error('Build failed.') } finally { setBuilding(false) }
   }
 
-  // Simple force-directed-ish layout drawn on canvas
-  useEffect(() => {
-    if (!data || !canvasRef.current || data.nodes.length === 0) return
-    const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    const W = canvas.width = canvas.offsetWidth
-    const H = canvas.height = 420
-
-    // Position nodes in a circle grouped by type
-    const types = Array.from(new Set(data.nodes.map(n => n.type)))
-    const positions: Record<string, {x:number,y:number}> = {}
-    const centerX = W/2, centerY = H/2, R = Math.min(W,H)/2 - 60
-
-    data.nodes.slice(0, 80).forEach((n, i) => {
-      const angle = (i / Math.min(data.nodes.length,80)) * Math.PI * 2
-      positions[n.id] = { x: centerX + R * Math.cos(angle), y: centerY + R * Math.sin(angle) }
-    })
-
-    ctx.clearRect(0,0,W,H)
-    // Draw edges
-    ctx.strokeStyle = 'rgba(26,61,175,0.15)'
-    ctx.lineWidth = 1
-    data.edges.slice(0, 150).forEach(e => {
-      const s = positions[e.source], t = positions[e.target]
-      if (s && t) { ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(t.x,t.y); ctx.stroke() }
-    })
-    // Draw nodes
-    data.nodes.slice(0, 80).forEach(n => {
-      const p = positions[n.id]
-      if (!p) return
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, 6, 0, Math.PI*2)
-      ctx.fillStyle = TYPE_COLOR[n.type] || '#9B9890'
-      ctx.fill()
-    })
+  const graphData = useMemo(() => {
+    if (!data) return { nodes: [], links: [] }
+    return {
+      nodes: data.nodes.map(n => ({ id: n.id, name: n.name, type: n.type, val: n.type === 'document' ? 4 : 6 })),
+      links: data.edges.map(e => ({ source: e.source, target: e.target, name: e.type }))
+    }
   }, [data])
 
   return (
@@ -121,7 +94,80 @@ export default function KnowledgeExplorer() {
               <Button onClick={build} loading={building}><RefreshCw className="w-4 h-4"/> Build Knowledge Graph</Button>
             </div>
           ) : (
-            <canvas ref={canvasRef} className="w-full" style={{height:420}}/>
+            <div className="w-full h-[450px] bg-[#FAFAF8] rounded-[11px] overflow-hidden border border-[#ECEAE4]">
+              <ForceGraph2D
+                ref={(fg: any) => {
+                  if (fg) {
+                    fg.d3Force('charge').strength(-400)
+                    fg.d3Force('link').distance(120)
+                  }
+                }}
+                graphData={graphData}
+                nodeLabel={() => ''} // disable default tooltip
+                linkColor={() => 'rgba(26,61,175,0.2)'}
+                linkWidth={1.5}
+                linkDirectionalArrowLength={4}
+                linkDirectionalArrowRelPos={1}
+                onNodeClick={(node: any) => setSelected(node)}
+                nodeCanvasObjectMode={() => 'replace'}
+                nodeCanvasObject={(node, ctx, globalScale) => {
+                  const label = node.name.length > 30 ? node.name.substring(0,27) + '...' : node.name
+                  const fontSize = 12 / globalScale
+                  ctx.font = `${fontSize}px Inter, sans-serif`
+                  
+                  const textWidth = ctx.measureText(label).width
+                  const height = fontSize + (10 / globalScale)
+                  const r = height / 2
+                  // width = radius (left curve) + space + dot + space + textWidth + space + radius (right curve)
+                  const dotRadius = 3 / globalScale
+                  const padding = 8 / globalScale
+                  const width = r + padding + (dotRadius * 2) + padding + textWidth + r
+                  
+                  const bckgDimensions = [width, height]
+                  const nodeColor = TYPE_COLOR[node.type] || '#9B9890'
+
+                  // Draw pill background
+                  ctx.fillStyle = '#FFFFFF'
+                  ctx.beginPath()
+                  const x = node.x! - bckgDimensions[0]/2
+                  const y = node.y! - bckgDimensions[1]/2
+                  const w = bckgDimensions[0]
+                  const h = bckgDimensions[1]
+                  
+                  ctx.moveTo(x + r, y)
+                  ctx.lineTo(x + w - r, y)
+                  ctx.arcTo(x + w, y, x + w, y + r, r)
+                  ctx.lineTo(x + w, y + h - r)
+                  ctx.arcTo(x + w, y + h, x + w - r, y + h, r)
+                  ctx.lineTo(x + r, y + h)
+                  ctx.arcTo(x, y + h, x, y + h - r, r)
+                  ctx.lineTo(x, y + r)
+                  ctx.arcTo(x, y, x + r, y, r)
+                  ctx.fill()
+                  
+                  // Draw pill border
+                  ctx.lineWidth = 1 / globalScale
+                  ctx.strokeStyle = nodeColor
+                  ctx.stroke()
+                  
+                  // Draw color dot indicator
+                  ctx.fillStyle = nodeColor
+                  ctx.beginPath()
+                  // Dot is placed after the left curve (r) and a small padding
+                  const dotX = x + r + (4 / globalScale)
+                  ctx.arc(dotX, node.y!, dotRadius, 0, 2 * Math.PI, false)
+                  ctx.fill()
+
+                  // Draw text
+                  ctx.textAlign = 'left'
+                  ctx.textBaseline = 'middle'
+                  ctx.fillStyle = '#0E0D0A'
+                  // Text is placed after the dot and its padding
+                  const textX = dotX + dotRadius + (6 / globalScale)
+                  ctx.fillText(label, textX, node.y!)
+                }}
+              />
+            </div>
           )}
         </CardBody>
       </Card>
