@@ -38,12 +38,13 @@ class AvoraDocumentProcessor:
 
     def _pdf_ensemble(self, fb):
         results = []
-        for fn in (self._pdfplumber, self._pymupdf):
+        for fn in (self._pdfplumber, self._pymupdf, self._pypdf2):
             try:
                 r = fn(fb)
                 if r.word_count > 10:
                     results.append(r)
-            except: pass
+            except Exception as e:
+                logger.error(f"[Avora DocProcessor] {fn.__name__} failed: {e}")
 
         best = None
         if results:
@@ -114,6 +115,16 @@ class AvoraDocumentProcessor:
             word_count=wc, confidence=conf, engine_used="pymupdf",
             quality_score=QualityScorer.score(text, conf))
 
+    def _pypdf2(self, fb):
+        import PyPDF2
+        reader = PyPDF2.PdfReader(io.BytesIO(fb))
+        text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+        wc = len(text.split())
+        conf = 0.90 if wc > 50 else 0.50
+        return ExtractionResult(raw_text=text, page_count=len(reader.pages),
+            word_count=wc, confidence=conf, engine_used="pypdf2",
+            quality_score=QualityScorer.score(text, conf))
+
     def _image_ensemble(self, fb):
         r = self._paddleocr(fb)
         if r.quality_score >= 0.7:
@@ -137,7 +148,7 @@ class AvoraDocumentProcessor:
             # Cache PaddleOCR instance to avoid loading weights on every page/call
             if '_PADDLE_OCR_INSTANCE' not in globals() or globals()['_PADDLE_OCR_INSTANCE'] is None:
                 from paddleocr import PaddleOCR
-                globals()['_PADDLE_OCR_INSTANCE'] = PaddleOCR(use_angle_cls=True, lang="en", show_log=False, use_gpu=False)
+                globals()['_PADDLE_OCR_INSTANCE'] = PaddleOCR(use_angle_cls=True, lang="en")
             
             ocr = globals()['_PADDLE_OCR_INSTANCE']
             result = ocr.ocr(img, cls=True)

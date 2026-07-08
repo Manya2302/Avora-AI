@@ -217,3 +217,29 @@ export const orgApi = {
   visibility:        (docId: string) => api.get(`/org/visibility/${docId}/`),
   setVisibility:     (docId: string, d: Record<string, unknown>) => api.patch(`/org/visibility/${docId}/`, d),
 }
+
+// -- Integrations (API Connector) ----------------------------------------
+export const integrationsApi = {
+  list:              () => api.get('/integrations/'),
+  gdStatus:          () => api.get('/integrations/google-drive/status/'),
+  gdSaveCredentials: (clientId: string, clientSecret: string) =>
+    api.post('/integrations/google-drive/credentials/', { client_id: clientId, client_secret: clientSecret }),
+  gdOAuthUrl:        () => api.get('/integrations/google-drive/oauth-url/'),
+  gdListFolders:     () => api.get('/integrations/google-drive/folders/'),
+  gdSaveFolders:     (folderIds: string[], folderNames: Record<string, string>) =>
+    api.post('/integrations/google-drive/folders/save/', { folder_ids: folderIds, folder_names: folderNames }),
+  gdDisconnect:      () => api.post('/integrations/google-drive/disconnect/'),
+  gdEvents:          () => api.get('/integrations/google-drive/events/'),
+
+  // GitHub Engineering Intelligence
+  ghStatus:          () => api.get('/integrations/github/status/'),
+  ghSaveCredentials: (clientId: string, clientSecret: string) =>
+    api.post('/integrations/github/credentials/', { client_id: clientId, client_secret: clientSecret }),
+  ghOAuthUrl:        () => api.get('/integrations/github/oauth-url/'),
+  ghListRepos:       () => api.get('/integrations/github/repos/'),
+  ghSaveRepos:       (repos: any[], domains: Record<string, boolean>) =>
+    api.post('/integrations/github/repos/save/', { repos, domains }),
+  ghDisconnect:      () => api.post('/integrations/github/disconnect/'),
+  ghPreview:         (repo: string, domain: string) =>
+    api.get(`/integrations/github/preview/?repo=${encodeURIComponent(repo)}&domain=${encodeURIComponent(domain)}`),
+}

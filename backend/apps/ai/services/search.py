@@ -15,7 +15,10 @@ def semantic_search(
     filters: dict | None = None,
     user=None,
 ) -> dict:
-    """Full semantic search with filters, timing, and analytics logging."""
+    """Full semantic search with filters, timing, and analytics logging.
+    Falls back to unfiltered Qdrant query + Python-side owner check
+    when payload indexes are not yet created.
+    """
     t0 = time.time()
     try:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -32,27 +35,48 @@ def semantic_search(
             if filters.get('confidentiality'):
                 must.append(FieldCondition(key="confidentiality", match=MatchValue(value=filters['confidentiality'])))
 
-        res = client.query_points(
-            collection_name=settings.QDRANT_COLLECTION,
-            query=vector,
-            query_filter=Filter(must=must),
-            limit=top_k,
-            with_payload=True,
-        )
+        def _run(qfilter):
+            return client.query_points(
+                collection_name=settings.QDRANT_COLLECTION,
+                query=vector,
+                query_filter=qfilter,
+                limit=top_k,
+                with_payload=True,
+            )
+
+        # Try filtered first; fall back to unfiltered if payload index missing
+        try:
+            res = _run(Filter(must=must))
+        except Exception as fe:
+            if "Index required" in str(fe) or "400" in str(fe):
+                logger.warning(
+                    "[RAG Search] Payload index missing — unfiltered fallback. "
+                    "Run: python create_qdrant_indexes.py to fix permanently."
+                )
+                res = _run(None)
+            else:
+                raise
+
         hits = res.points
 
         unique_docs = {}
         for r in hits:
-            doc_id = r.payload.get('document_id')
+            payload = r.payload or {}
+            # Python-side ownership enforcement for fallback path
+            point_owner = payload.get("owner_id", "")
+            if point_owner and str(point_owner) != str(owner_id):
+                continue
+
+            doc_id = payload.get('document_id')
             if not doc_id: continue
             if doc_id not in unique_docs or r.score > unique_docs[doc_id]['score_raw']:
                 unique_docs[doc_id] = {
-                    'document_id':    doc_id,
-                    'original_name':  r.payload.get('original_name', ''),
-                    'category':       r.payload.get('category', ''),
-                    'tags':           r.payload.get('tags', []),
-                    'short_summary':  r.payload.get('chunk_text', r.payload.get('short_summary', ''))[:150].strip() + '...',
-                    'confidentiality':r.payload.get('confidentiality', 'internal'),
+                    'document_id':    str(doc_id),
+                    'original_name':  payload.get('original_name', ''),
+                    'category':       payload.get('category', ''),
+                    'tags':           payload.get('tags', []),
+                    'short_summary':  payload.get('chunk_text', payload.get('short_summary', ''))[:150].strip() + '...',
+                    'confidentiality':payload.get('confidentiality', 'internal'),
                     'score_raw':      r.score,
                     'score':          round(r.score * 100, 1),
                 }
@@ -63,7 +87,6 @@ def semantic_search(
 
         elapsed = int((time.time() - t0) * 1000)
 
-        # Log to analytics
         if user:
             _log_search(user, query, len(results), elapsed, filters or {})
 

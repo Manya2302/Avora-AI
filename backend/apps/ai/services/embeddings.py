@@ -258,12 +258,13 @@ def generate_and_store_embedding_v2(
             points=points[i:i+100]
         )
 
+    v_size = len(vectors[0]) if vectors else getattr(settings, 'QDRANT_VECTOR_SIZE', 1024)
     DocumentEmbedding.objects.update_or_create(
         document_id=document_id,
         defaults={
             'qdrant_point_id': uuid.UUID(str(document_id)),
             'model_name':      settings.OLLAMA_EMBED_MODEL,
-            'vector_size':     len(vector),
+            'vector_size':     v_size,
         }
     )
     logger.info(f"[Avora Embed] Stored {document_id}")

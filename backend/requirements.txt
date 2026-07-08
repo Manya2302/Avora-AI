@@ -58,3 +58,8 @@ PyMuPDF
 # Phase 4 — Copilot & Knowledge Graph
 # qdrant-client==1.7.3
 networkx==3.2.1
+
+# Integrations — Google Drive connector
+google-auth
+google-auth-oauthlib
+google-api-python-client

@@ -36,5 +36,7 @@ urlpatterns = [
     path('api/copilot/',     include('apps.copilot.urls')),
     path('api/knowledge/',   include('apps.knowledge.urls')),
     # Enterprise Governance
-    path('api/org/',          include('apps.organizations.urls')),
+    path('api/org/',            include('apps.organizations.urls')),
+    # Integrations
+    path('api/integrations/',   include('apps.integrations.urls')),
 ] + swagger_urls + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

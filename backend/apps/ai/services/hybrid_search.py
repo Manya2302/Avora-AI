@@ -106,80 +106,93 @@ def hybrid_search(
 # ── Signal 1: Vector Search ───────────────────────────────────
 
 def _vector_search(query: str, owner_id: str, top_k: int, filters: dict, user=None) -> dict:
-    """Returns {doc_id: {score, original_name, category, ...}}"""
+    """Returns {doc_id: {score, original_name, category, ...}}
+
+    Falls back to unfiltered search if Qdrant payload indexes are missing,
+    then applies Python-side owner filtering on the returned payloads.
+    """
     try:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue, HasIdCondition
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
         from utils.qdrant_client import get_client
 
         vector = generate_embedding(query, is_query=True)
         client = get_client()
 
-        # Build permission-aware filter
-        must = []
-
-        if user:
-            # Use the permission engine to restrict to accessible documents
-            try:
-                from apps.organizations.permissions import get_accessible_document_ids
-                accessible = get_accessible_document_ids(user)
-                if accessible:
-                    # Qdrant: filter by payload document_id being in the accessible set
-                    # We use owner_id as baseline + accessible doc override
-                    must.append(FieldCondition(key="owner_id", match=MatchValue(value=owner_id)))
-                else:
-                    must.append(FieldCondition(key="owner_id", match=MatchValue(value=owner_id)))
-            except Exception:
-                must.append(FieldCondition(key="owner_id", match=MatchValue(value=owner_id)))
-        else:
-            must.append(FieldCondition(key="owner_id", match=MatchValue(value=owner_id)))
+        # Build must-filter list
+        must = [FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]
 
         if filters.get("category"):
             must.append(FieldCondition(key="category", match=MatchValue(value=filters["category"])))
         if filters.get("confidentiality"):
             must.append(FieldCondition(key="confidentiality", match=MatchValue(value=filters["confidentiality"])))
 
-        res = client.query_points(
-            collection_name=settings.QDRANT_COLLECTION,
-            query=vector,
-            query_filter=Filter(must=must),
-            limit=top_k,
-            with_payload=True,
-        )
+        def _run_query(query_filter):
+            return client.query_points(
+                collection_name=settings.QDRANT_COLLECTION,
+                query=vector,
+                query_filter=query_filter,
+                limit=top_k,
+                with_payload=True,
+            )
 
+        # ── Try with filters first ───────────────────────────────
+        try:
+            res = _run_query(Filter(must=must))
+        except Exception as filter_err:
+            err_str = str(filter_err)
+            if "Index required" in err_str or "400" in err_str:
+                logger.warning(
+                    "[Hybrid/Vector] Payload index missing — falling back to unfiltered search. "
+                    "Run: python create_qdrant_indexes.py to fix permanently."
+                )
+                # Fallback: no Qdrant filter; enforce ownership in Python below
+                res = _run_query(None)
+            else:
+                raise
+
+        # ── Parse results ────────────────────────────────────────
         out = {}
         for r in res.points:
-            doc_id = r.payload.get("document_id")
+            payload = r.payload or {}
+
+            # Python-side owner enforcement (important for fallback path)
+            point_owner = payload.get("owner_id", "")
+            if point_owner and str(point_owner) != str(owner_id):
+                continue
+
+            doc_id = payload.get("document_id")
             if not doc_id:
                 continue
             if doc_id not in out or r.score > out[doc_id]["score"]:
-                short_summary = r.payload.get("chunk_text", r.payload.get("short_summary", ""))[:200].strip() + "..."
-                is_encrypted = r.payload.get("is_encrypted", False)
-                if is_encrypted and (r.payload.get("short_summary_enc") or r.payload.get("chunk_text_enc")):
+                short_summary = payload.get("chunk_text", payload.get("short_summary", ""))[:200].strip() + "..."
+                is_encrypted = payload.get("is_encrypted", False)
+                if is_encrypted and (payload.get("short_summary_enc") or payload.get("chunk_text_enc")):
                     try:
                         from apps.documents.models import DocumentEncryptionKey
                         from apps.documents.services.encryption import decrypt_string
                         key_record = DocumentEncryptionKey.objects.get(document_id=doc_id)
                         aes_key = key_record.encrypted_aes_key
-                        if r.payload.get("chunk_text_enc"):
-                            short_summary = decrypt_string(r.payload.get("chunk_text_enc"), aes_key)[:200].strip() + "..."
-                        elif r.payload.get("short_summary_enc"):
-                            short_summary = decrypt_string(r.payload.get("short_summary_enc"), aes_key)[:200].strip() + "..."
-                    except Exception as dec_err:
+                        if payload.get("chunk_text_enc"):
+                            short_summary = decrypt_string(payload.get("chunk_text_enc"), aes_key)[:200].strip() + "..."
+                        elif payload.get("short_summary_enc"):
+                            short_summary = decrypt_string(payload.get("short_summary_enc"), aes_key)[:200].strip() + "..."
+                    except Exception:
                         short_summary = "[Encrypted Content]"
 
                 out[doc_id] = {
-                    "document_id":    doc_id,
-                    "original_name":  r.payload.get("original_name", ""),
-                    "category":       r.payload.get("category", ""),
-                    "tags":           r.payload.get("tags", []),
-                    "short_summary":  short_summary,
-                    "confidentiality": r.payload.get("confidentiality", "internal"),
-                    "score":          r.score,
+                    "document_id":     str(doc_id),
+                    "original_name":   payload.get("original_name", ""),
+                    "category":        payload.get("category", ""),
+                    "tags":            payload.get("tags", []),
+                    "short_summary":   short_summary,
+                    "confidentiality": payload.get("confidentiality", "internal"),
+                    "score":           r.score,
                 }
         return out
     except Exception as e:
         logger.warning(f"[Hybrid/Vector] {e}")
         return {}
+
 
 
 # ── Signal 2: BM25 via DB ─────────────────────────────────────

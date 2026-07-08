@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, FileText, Upload, Search, ClipboardList, User, Settings, Shield, LogOut, Folder, Sparkles, CheckSquare, FileSignature, AlertTriangle, MessageSquare, Network, LayoutGrid, Building2 } from 'lucide-react'
+import { LayoutDashboard, FileText, Upload, Search, ClipboardList, User, Settings, Shield, LogOut, Folder, Sparkles, CheckSquare, FileSignature, AlertTriangle, MessageSquare, Network, LayoutGrid, Building2, Plug } from 'lucide-react'
 import { cn, getInitials } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 
@@ -24,6 +24,7 @@ const nav_template = [
   { href:'/knowledge',    label:'Knowledge Explorer',  icon:Network,         group:'copilot' },
   { href:'/organization', label:'Organization',         icon:Building2,       group:'governance' },
   { href:'/audit-logs',   label:'Audit Logs',          icon:ClipboardList,   group:'security' },
+  { href:'/integrations', label:'Integrations',         icon:Plug,            group:'account' },
   { href:'/profile',      label:'Profile',             icon:User,            group:'account' },
   { href:'/settings',     label:'Settings',            icon:Settings,        group:'account' },
 ]
