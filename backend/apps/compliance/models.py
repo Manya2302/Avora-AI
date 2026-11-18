@@ -34,6 +34,7 @@ class MissingDocument(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         db_table = "missing_documents"
+        indexes = [models.Index(fields=['owner', 'is_resolved'])]
         ordering = ["priority", "-created_at"]
 
 class ExpiryAlert(models.Model):
@@ -54,6 +55,7 @@ class ExpiryAlert(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         db_table = "expiry_alerts"
+        indexes = [models.Index(fields=['owner', 'is_dismissed', 'expiry_date'])]
         ordering = ["expiry_date"]
 
 class AuditPackage(models.Model):
@@ -84,6 +86,7 @@ class ComplianceCopilotChat(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         db_table = "compliance_copilot_chats"
+        indexes = [models.Index(fields=['owner', 'created_at'])]
         ordering = ["created_at"]
 
 class ComplianceTimeline(models.Model):
@@ -104,6 +107,7 @@ class ComplianceTimeline(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         db_table = "compliance_timeline"
+        indexes = [models.Index(fields=['owner', 'is_completed', 'due_date'])]
         ordering = ["due_date"]
 
 class ComplianceRisk(models.Model):
@@ -131,6 +135,7 @@ class ComplianceRisk(models.Model):
     
     class Meta:
         db_table = "compliance_risks"
+        indexes = [models.Index(fields=['owner', '-created_at']), models.Index(fields=['owner', 'is_resolved', 'severity']), models.Index(fields=['document_id'])]
         ordering = ["-created_at"]
 
 class ComplianceCheckResult(models.Model):
@@ -149,4 +154,5 @@ class ComplianceCheckResult(models.Model):
     
     class Meta:
         db_table = "compliance_check_results"
+        indexes = [models.Index(fields=['owner', 'is_ignored']), models.Index(fields=['document_id'])]
         ordering = ["-created_at"]

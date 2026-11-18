@@ -38,3 +38,25 @@ export function compressionRatio(original: number, compressed: number): string {
 export function truncate(str: string, max = 50): string {
   return str.length > max ? str.slice(0, max) + '…' : str
 }
+
+/**
+ * Poll `fetch` until `isDone(result)` is true. Used for background jobs
+ * (AI reports, contract analysis) that return 202 and finish later.
+ * Backs off from 1.5s to 5s; gives up after `timeoutMs` (default 5 min).
+ */
+export async function pollUntil<T>(
+  fetch: () => Promise<T>,
+  isDone: (value: T) => boolean,
+  { timeoutMs = 5 * 60_000, signal }: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<T> {
+  const started = Date.now()
+  let delay = 1500
+  for (;;) {
+    if (signal?.aborted) throw new Error('aborted')
+    const value = await fetch()
+    if (isDone(value)) return value
+    if (Date.now() - started > timeoutMs) throw new Error('timeout')
+    await new Promise(r => setTimeout(r, delay))
+    delay = Math.min(delay * 1.4, 5000)
+  }
+}

@@ -1,11 +1,13 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { LayoutGrid, MessageSquare, FileBarChart, BookOpen, Network, Lightbulb, Pin, ArrowRight, Sparkles } from 'lucide-react'
+import { MessageSquare, FileBarChart, BookOpen, Network, Lightbulb, Sparkles, History, Plus } from 'lucide-react'
 import { copilotApi } from '@/lib/api'
-import { Card, CardHeader, CardBody } from '@/components/shared/Card'
+import { Card, CardHeader } from '@/components/shared/Card'
 import StatCard from '@/components/shared/StatCard'
 import Badge from '@/components/shared/Badge'
+import Button from '@/components/shared/Button'
+import PageHeader from '@/components/shared/PageHeader'
 
 export default function WorkspacePage() {
   const router = useRouter()
@@ -15,46 +17,48 @@ export default function WorkspacePage() {
   useEffect(() => { copilotApi.dashboard().then(r => setData(r.data)).catch(()=>{}).finally(()=>setLoading(false)) }, [])
 
   const tools = [
-    { label:'New Conversation',   icon:MessageSquare, href:'/copilot',              color:'bg-[#EBF0FF] text-[#1A3DAF]', desc:'Ask anything about your documents' },
-    { label:'Generated Reports',  icon:FileBarChart,  href:'/copilot/reports',      color:'bg-purple-50 text-purple-600', desc:'Multi-document analysis reports' },
-    { label:'Prompt Library',     icon:BookOpen,       href:'/copilot/prompts',      color:'bg-amber-50 text-amber-600', desc:'Built-in enterprise prompts' },
-    { label:'Knowledge Explorer', icon:Network,        href:'/knowledge',            color:'bg-green-50 text-green-600', desc:'Organizational knowledge graph' },
-    { label:'Recommendations',   icon:Lightbulb,      href:'/copilot/recommendations', color:'bg-red-50 text-red-600', desc:'Proactive AI suggestions' },
-    { label:'Conversation History', icon:MessageSquare, href:'/copilot/history',    color:'bg-blue-50 text-blue-600', desc:'Revisit past conversations' },
+    { label:'New conversation',     icon:MessageSquare, href:'/copilot',                 desc:'Ask a question about your documents' },
+    { label:'Reports',              icon:FileBarChart,  href:'/copilot/reports',         desc:'Analysis that spans many documents' },
+    { label:'Prompt library',       icon:BookOpen,      href:'/copilot/prompts',         desc:'Ready-made questions for common reviews' },
+    { label:'Knowledge explorer',   icon:Network,       href:'/knowledge',               desc:'How people, vendors and documents connect' },
+    { label:'Recommendations',      icon:Lightbulb,     href:'/copilot/recommendations', desc:'Things worth a look in your documents' },
+    { label:'Conversation history', icon:History,       href:'/copilot/history',         desc:'Pick up a past conversation' },
   ]
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-gradient-to-br from-[#1A3DAF] to-[#7B9FE8] rounded-[11px] flex items-center justify-center">
-          <LayoutGrid className="w-5 h-5 text-white"/>
-        </div>
-        <div><h2 className="font-display text-2xl font-bold text-[#0E0D0A]">AI Workspace</h2>
-          <p className="text-sm text-[#9B9890]">Your enterprise knowledge assistant command center</p></div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Copilot"
+        description="Ask questions across your documents, generate reports and pick up past conversations."
+        actions={<Button size="sm" onClick={() => router.push('/copilot')}><Plus className="h-3.5 w-3.5"/> New chat</Button>}
+      />
 
       {/* Usage stats */}
-      {data && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <StatCard label="Conversations"   value={data.total_conversations} icon={<MessageSquare/>} accent="blue"/>
-          <StatCard label="Questions Asked" value={data.total_questions}     icon={<Sparkles/>}      accent="purple"/>
-          <StatCard label="Reports Generated" value={data.reports_generated} icon={<FileBarChart/>}   accent="green"/>
-          <StatCard label="Avg Confidence"  value={`${data.avg_confidence}%`} icon={<Lightbulb/>}      accent="amber"/>
+      {loading ? (
+        <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-[104px] animate-pulse rounded-[12px] bg-[#F1EFEA]"/>)}
+        </div>
+      ) : !data ? (
+        <p className="text-[13px] text-[#8A877F]">Usage stats couldn’t be loaded right now.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+          <StatCard label="Conversations"     value={data.total_conversations} icon={<MessageSquare/>} accent="blue"/>
+          <StatCard label="Questions asked"   value={data.total_questions}     icon={<Sparkles/>}      accent="purple"/>
+          <StatCard label="Reports generated" value={data.reports_generated}   icon={<FileBarChart/>}  accent="green"/>
+          <StatCard label="Average confidence" value={typeof data.avg_confidence === 'number' ? `${data.avg_confidence}%` : '—'} icon={<Lightbulb/>}  accent="amber"/>
         </div>
       )}
 
       {/* Tools grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
         {tools.map(t => (
           <button key={t.href} onClick={() => router.push(t.href)}
-            className="text-left bg-white border border-[#DDD9D0] rounded-[14px] p-5 hover:border-[#1A3DAF]/30 hover:shadow-md transition-all hover:-translate-y-0.5 group">
-            <div className={`w-11 h-11 rounded-[11px] flex items-center justify-center mb-4 ${t.color}`}>
-              <t.icon className="w-5 h-5"/>
+            className="group flex items-start gap-3 rounded-[12px] border border-[#DDD9D0] bg-white p-4 text-left transition-colors hover:border-[#BDB8AC]">
+            <t.icon className="mt-0.5 h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75}/>
+            <div className="min-w-0">
+              <h3 className="text-[14px] font-semibold text-[#0E0D0A]">{t.label}</h3>
+              <p className="mt-0.5 text-[13px] text-[#8A877F]">{t.desc}</p>
             </div>
-            <h3 className="font-semibold text-[#0E0D0A] mb-1 group-hover:text-[#1A3DAF] transition-colors flex items-center gap-1.5">
-              {t.label} <ArrowRight className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity"/>
-            </h3>
-            <p className="text-xs text-[#9B9890]">{t.desc}</p>
           </button>
         ))}
       </div>
@@ -62,17 +66,17 @@ export default function WorkspacePage() {
       {/* Recent conversations */}
       {data?.recent_convs?.length > 0 && (
         <Card>
-          <CardHeader title="Recent Conversations" action={<button onClick={() => router.push('/copilot/history')} className="text-xs text-[#1A3DAF] hover:underline">All →</button>}/>
-          <div className="divide-y divide-[#ECEAE4]">
+          <CardHeader title="Recent conversations" action={<button onClick={() => router.push('/copilot/history')} className="link text-[13px]">View all</button>}/>
+          <div>
             {data.recent_convs.map((c: any) => (
               <div key={c.id} onClick={() => router.push(`/copilot?conv=${c.id}`)}
-                className="flex items-center gap-3 px-5 py-3 hover:bg-[#F7F5F0] cursor-pointer">
-                <MessageSquare className="w-4 h-4 text-[#9B9890] flex-shrink-0"/>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-[#0E0D0A] truncate">{c.title}</p>
-                  <p className="font-mono text-[11px] text-[#9B9890]">{c.message_count} messages</p>
+                className="flex cursor-pointer items-center gap-3 border-t border-[#F1EFEA] px-5 py-3 first:border-0 hover:bg-[#FBFAF7]">
+                <MessageSquare className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75}/>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-medium text-[#0E0D0A]">{c.title}</p>
+                  <p className="text-[12.5px] text-[#8A877F]">{c.message_count} messages</p>
                 </div>
-                <Badge variant="blue">{c.mode}</Badge>
+                <Badge variant="gray" className="capitalize">{c.mode}</Badge>
               </div>
             ))}
           </div>

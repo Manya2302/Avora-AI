@@ -11,7 +11,7 @@ def answer_compliance_question(owner, question: str) -> dict:
     try:
         p = ComplianceProfile.objects.get(owner=owner)
         score, audit_r, industry = p.compliance_score, p.audit_readiness_pct, p.industry
-    except: score, audit_r, industry = 0, 0, "other"
+    except Exception: score, audit_r, industry = 0, 0, "other"
     missing  = MissingDocument.objects.filter(owner=owner, is_resolved=False).count()
     expiring = ExpiryAlert.objects.filter(owner=owner, is_dismissed=False).exclude(alert_type="expired").count()
     high_risk= ContractAnalysis.objects.filter(owner=owner, risk_level__in=["high","critical"]).count()
@@ -22,7 +22,7 @@ def answer_compliance_question(owner, question: str) -> dict:
         ComplianceCopilotChat.objects.create(owner=owner, role="user", message=question)
         ComplianceCopilotChat.objects.create(owner=owner, role="assistant", message=answer,
             context={"score":score,"audit_readiness":audit_r,"missing":missing})
-    except: pass
+    except Exception: pass
     return {"answer": answer, "context": {"score":score,"audit_readiness":audit_r,"missing":missing,"expiring":expiring,"high_risk_contracts":high_risk}}
 
 def _ollama(prompt):

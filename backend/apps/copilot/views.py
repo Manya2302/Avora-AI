@@ -4,6 +4,18 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import generics, status
 from django.utils import timezone
+from django.db import transaction
+from django.db.models import F, Q
+from apps.admin_panel.permissions import IsAdminRole
+
+
+def _is_uuid(v) -> bool:
+    import uuid
+    try:
+        uuid.UUID(str(v))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
 from .models import (CopilotConversation, CopilotMessage, DocumentReference,
                      PromptTemplate, AIReport, AIRecommendation, ReasoningLog)
 from .serializers import (CopilotConversationSerializer, ConversationDetailSerializer,
@@ -24,70 +36,44 @@ class CopilotQueryView(APIView):
             return Response({"error": "Question required."}, status=400)
 
         # Expand from template
+        question = question[:4000]
         if template_id:
-            try:
-                tpl = PromptTemplate.objects.get(id=template_id)
+            # Only built-in, public, or the caller's own templates (no reading others' prompts)
+            tpl = (PromptTemplate.objects
+                   .filter(Q(is_builtin=True) | Q(is_public=True) | Q(owner=request.user), id=template_id)
+                   .only("id", "prompt").first() if _is_uuid(template_id) else None)
+            if tpl:
                 question = tpl.prompt + " " + question
-                PromptTemplate.objects.filter(id=template_id).update(
-                    use_count=tpl.use_count+1)
-            except: pass
+                PromptTemplate.objects.filter(id=tpl.id).update(use_count=F("use_count") + 1)
 
         # Get or create conversation
-        if conv_id:
-            try: conv = CopilotConversation.objects.get(id=conv_id, owner=request.user)
-            except: conv = self._new_conversation(request.user, mode, question)
-        else:
+        conv = None
+        if conv_id and _is_uuid(conv_id):
+            conv = CopilotConversation.objects.filter(id=conv_id, owner=request.user).first()
+        if conv is None:
             conv = self._new_conversation(request.user, mode, question)
 
         # Build conversation history
-        history = list(conv.messages.order_by("created_at").values("role","content")[:8])
+        # The LAST 8 messages, oldest→newest (previously took the FIRST 8 of the conversation)
+        history = list(conv.messages.order_by("-created_at").values("role", "content")[:8])[::-1]
 
         # Run RAG
         from .services.rag_engine import AvoraRAGEngine
         result = AvoraRAGEngine().query(
             question=question,
             owner_id=str(request.user.id),
+            user=request.user,
             mode=mode,
             conversation_history=history,
         )
 
-        # Save user message
-        user_msg = CopilotMessage.objects.create(
-            conversation=conv, role="user", content=question)
+        with transaction.atomic():
+            asst_msg = self._persist(conv, question, result)
 
-        # Save assistant message
-        asst_msg = CopilotMessage.objects.create(
-            conversation=conv, role="assistant",
-            content=result["answer"],
-            thinking=result.get("thinking",""),
-            confidence_score=result.get("confidence", 0.0),
-            sources_count=result.get("sources_count", 0),
-            latency_ms=result.get("latency_ms", 0),
-        )
+        # Tag each citation with where its document came from (uploads / google_drive)
+        from .services.source_origin import annotate_origins
+        annotate_origins(result.get("sources") or [])
 
-        # Save document references
-        for ref in result.get("sources", []):
-            DocumentReference.objects.create(
-                message=asst_msg,
-                document_id=ref["document_id"],
-                document_name=ref["document_name"],
-                relevance=ref["relevance"],
-                excerpt=ref.get("excerpt",""),
-            )
-
-        # Save reasoning log
-        ReasoningLog.objects.create(
-            message=asst_msg,
-            query_analysis=result.get("query_expanded",""),
-            docs_retrieved=result.get("docs_retrieved",0),
-            hallucination_flags=result.get("hallucination_flags",[]),
-        )
-
-        # Update conversation
-        CopilotConversation.objects.filter(pk=conv.pk).update(
-            message_count=conv.messages.count(),
-            updated_at=timezone.now(),
-        )
 
         return Response({
             "conversation_id": str(conv.id),
@@ -102,6 +88,34 @@ class CopilotQueryView(APIView):
             "active_agent":    result.get("active_agent", "Search Agent"),
             "agent_reason":    result.get("agent_reason", ""),
         })
+
+    @staticmethod
+    def _persist(conv, question, result):
+        """All writes for one Q&A turn in one transaction, references bulk-inserted."""
+        CopilotMessage.objects.create(conversation=conv, role="user", content=question)
+        asst_msg = CopilotMessage.objects.create(
+            conversation=conv, role="assistant",
+            content=result["answer"],
+            thinking=result.get("thinking", ""),
+            confidence_score=result.get("confidence", 0.0),
+            sources_count=result.get("sources_count", 0),
+            latency_ms=result.get("latency_ms", 0),
+        )
+        DocumentReference.objects.bulk_create([
+            DocumentReference(message=asst_msg, document_id=ref["document_id"],
+                              document_name=ref.get("document_name", ""), relevance=ref.get("relevance", 0),
+                              excerpt=ref.get("excerpt", ""))
+            for ref in result.get("sources", [])
+        ])
+        ReasoningLog.objects.create(
+            message=asst_msg,
+            query_analysis=result.get("query_expanded", ""),
+            docs_retrieved=result.get("docs_retrieved", 0),
+            hallucination_flags=result.get("hallucination_flags", []),
+        )
+        CopilotConversation.objects.filter(pk=conv.pk).update(
+            message_count=F("message_count") + 2, updated_at=timezone.now())
+        return asst_msg
 
     def _new_conversation(self, user, mode, question):
         title = question[:80] + ("…" if len(question) > 80 else "")
@@ -121,7 +135,8 @@ class ConversationDetailView(generics.RetrieveDestroyAPIView):
     """GET /DELETE /api/copilot/conversations/<id>/"""
     serializer_class = ConversationDetailSerializer
     def get_queryset(self):
-        return CopilotConversation.objects.filter(owner=self.request.user)
+        return (CopilotConversation.objects.filter(owner=self.request.user)
+                .prefetch_related("messages__references"))
 
 
 class PinConversationView(APIView):
@@ -131,16 +146,29 @@ class PinConversationView(APIView):
             conv = CopilotConversation.objects.get(pk=pk, owner=request.user)
             conv.is_pinned = not conv.is_pinned; conv.save()
             return Response({"pinned": conv.is_pinned})
-        except: return Response(status=404)
+        except Exception: return Response(status=404)
 
 
 class PromptLibraryView(generics.ListAPIView):
     """GET /api/copilot/prompts/"""
     serializer_class = PromptTemplateSerializer
     def get_queryset(self):
-        qs = PromptTemplate.objects.filter(is_builtin=True) | PromptTemplate.objects.filter(owner=self.request.user)
+        qs = PromptTemplate.objects.filter(Q(is_builtin=True) | Q(owner=self.request.user))
         if cat := self.request.query_params.get("category"): qs = qs.filter(category=cat)
-        return qs.distinct().order_by("-use_count")[:50]
+        return qs.order_by("-use_count")[:50]
+
+
+class UsePromptView(APIView):
+    """POST /api/copilot/prompts/<id>/use/ — fetch one template to open in Copilot and count the use.
+    Visible templates only: built-in, public, or the caller's own (same rule as the query endpoint)."""
+    def post(self, request, pk):
+        tpl = (PromptTemplate.objects
+               .filter(Q(is_builtin=True) | Q(is_public=True) | Q(owner=request.user), id=pk).first())
+        if not tpl:
+            return Response({"error": "Prompt not found."}, status=404)
+        PromptTemplate.objects.filter(id=tpl.id).update(use_count=F("use_count") + 1)
+        tpl.refresh_from_db(fields=["use_count"])
+        return Response(PromptTemplateSerializer(tpl).data)
 
 
 class CreatePromptView(generics.CreateAPIView):
@@ -151,7 +179,8 @@ class CreatePromptView(generics.CreateAPIView):
 
 
 class SeedPromptsView(APIView):
-    """POST /api/copilot/prompts/seed/"""
+    """POST /api/copilot/prompts/seed/  (admins only — writes global built-ins)"""
+    permission_classes = [IsAdminRole]
     def post(self, request):
         from .services.prompt_library import seed_builtin_prompts
         count = seed_builtin_prompts()
@@ -162,8 +191,11 @@ class GenerateReportView(APIView):
     """POST /api/copilot/reports/generate/"""
     def post(self, request):
         report_type   = request.data.get("report_type", "custom")
-        doc_ids       = request.data.get("document_ids", [])
-        custom_prompt = request.data.get("custom_prompt", "")
+        doc_ids       = request.data.get("document_ids", []) or []
+        custom_prompt = str(request.data.get("custom_prompt", ""))[:4000]
+        if not isinstance(doc_ids, list):
+            return Response({"error": "document_ids must be a list."}, status=400)
+        doc_ids = [str(d) for d in doc_ids if _is_uuid(d)][:50]
 
         if not doc_ids:
             from apps.documents.models import Document
@@ -172,16 +204,23 @@ class GenerateReportView(APIView):
             ).values_list("id", flat=True)[:20])
             doc_ids = [str(d) for d in doc_ids]
 
-        from .services.report_generator import generate_ai_report
-        result = generate_ai_report(request.user, report_type, doc_ids, custom_prompt)
-        return Response(result, status=201)
+        # Returns immediately; the LLM work runs in the background.
+        # Poll GET /api/copilot/reports/<report_id>/ until status is "ready" or "failed".
+        from .services.report_generator import create_report
+        from .tasks import generate_report_task
+        from apps.ai.services.dispatch import dispatch
+        report = create_report(request.user, report_type, doc_ids, custom_prompt)
+        dispatch(generate_report_task, str(report.id))
+        return Response({"report_id": str(report.id), "status": report.status, "title": report.title,
+                         "doc_count": report.doc_count,
+                         "poll_url": f"/api/copilot/reports/{report.id}/"}, status=202)
 
 
 class ReportListView(generics.ListAPIView):
     """GET /api/copilot/reports/"""
     serializer_class = AIReportSerializer
     def get_queryset(self):
-        return AIReport.objects.filter(owner=self.request.user)
+        return AIReport.objects.filter(owner=self.request.user).order_by("-created_at")
 
 
 class ReportDetailView(generics.RetrieveAPIView):
@@ -205,7 +244,7 @@ class DismissRecommendationView(APIView):
             r = AIRecommendation.objects.get(pk=pk, owner=request.user)
             r.is_dismissed = True; r.save()
             return Response({"status": "dismissed"})
-        except: return Response(status=404)
+        except Exception: return Response(status=404)
 
 
 class CopilotDashboardView(APIView):
@@ -213,13 +252,16 @@ class CopilotDashboardView(APIView):
     def get(self, request):
         from django.db.models import Count, Avg
         convs = CopilotConversation.objects.filter(owner=request.user)
-        msgs  = CopilotMessage.objects.filter(conversation__owner=request.user, role="assistant")
+        c = convs.aggregate(total=Count("id"), pinned=Count("id", filter=Q(is_pinned=True)))
+        m = CopilotMessage.objects.filter(conversation__owner=request.user, role="assistant").aggregate(
+            n=Count("id"), avg=Avg("confidence_score"))
         return Response({
-            "total_conversations": convs.count(),
-            "total_questions":     msgs.count(),
+            "total_conversations": c["total"],
+            "total_questions":     m["n"],
             "reports_generated":   AIReport.objects.filter(owner=request.user, status="ready").count(),
-            "avg_confidence":      round((msgs.aggregate(a=Avg("confidence_score"))["a"] or 0)*100, 1),
-            "pinned_convs":        convs.filter(is_pinned=True).count(),
+            # null (not 0) when nothing has been answered yet — the UI shows "—"
+            "avg_confidence":      round(m["avg"] * 100, 1) if m["avg"] is not None else None,
+            "pinned_convs":        c["pinned"],
             "recommendations":     AIRecommendation.objects.filter(owner=request.user, is_dismissed=False).count(),
             "recent_convs":        list(convs.order_by("-updated_at").values("id","title","mode","updated_at","message_count")[:5]),
         })
@@ -239,6 +281,7 @@ class MultiDocAnalysisView(APIView):
         result = AvoraRAGEngine().query(
             question=f"Multi-document analysis: {question}",
             owner_id=str(request.user.id),
+            user=request.user,
             mode="knowledge",
         )
         return Response({

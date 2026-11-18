@@ -10,6 +10,9 @@ urlpatterns = [
     path('audits/',                 views.AdminAuditLogView.as_view(),            name='admin-audits'),
     path('security/',               views.AdminSecurityAlertsView.as_view(),      name='admin-security'),
     path('storage/',                views.AdminStorageStatsView.as_view(),         name='admin-storage'),
+    path('compliance/',             views.AdminComplianceOverviewView.as_view(),  name='admin-compliance'),
+    path('system-health/',          views.AdminSystemHealthView.as_view(),         name='admin-system-health'),
+    path('settings/',               views.AdminSettingsView.as_view(),             name='admin-settings'),
     # Phase 2 — AI Monitoring
     path('ai/monitor/',             views.AdminAIMonitorView.as_view(),           name='admin-ai-monitor'),
     path('ai/ocr-queue/',           views.AdminAIOCRQueueView.as_view(),          name='admin-ai-ocr-queue'),

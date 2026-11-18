@@ -3,6 +3,8 @@ from apps.users import views
 
 urlpatterns = [
     path('me/',                      views.MeView.as_view(),              name='user-me'),
+    path('me/summary/',              views.AccountSummaryView.as_view(),  name='user-summary'),
+    path('me/preferences/',          views.PreferencesView.as_view(),     name='user-preferences'),
     path('profile/',                 views.ProfileView.as_view(),          name='user-profile'),
     path('change-password/',         views.ChangePasswordView.as_view(),   name='user-change-pw'),
     path('sessions/',                views.SessionListView.as_view(),       name='user-sessions'),

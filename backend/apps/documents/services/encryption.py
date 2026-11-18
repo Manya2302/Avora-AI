@@ -113,9 +113,19 @@ def encrypt_string(text: str, aes_key: bytes) -> dict:
 
 def decrypt_string(encrypted_dict: dict, aes_key: bytes) -> str:
     """Decrypt a hex-encoded dictionary back to string."""
+    # encrypt_chunk() already returns ciphertext WITH the 16-byte GCM tag appended, so
+    # 'ciphertext_hex' is complete on its own. The previous implementation appended
+    # tag_hex a second time, which made GCM authentication fail for every payload.
+    # Try the correct form first; keep the concatenated form as a fallback.
     try:
-        ciphertext_with_tag = bytes.fromhex(encrypted_dict['ciphertext_hex']) + bytes.fromhex(encrypted_dict['tag_hex'])
-        plaintext_bytes = decrypt_chunk(ciphertext_with_tag, aes_key, encrypted_dict['iv_hex'])
-        return plaintext_bytes.decode('utf-8')
-    except Exception as e:
+        aes_key = bytes(aes_key)
+        ct = bytes.fromhex(encrypted_dict['ciphertext_hex'])
+        iv = encrypted_dict['iv_hex']
+    except Exception:
         return ""
+    for candidate in (ct, ct + bytes.fromhex(encrypted_dict.get('tag_hex', '') or '')):
+        try:
+            return decrypt_chunk(candidate, aes_key, iv).decode('utf-8')
+        except Exception:
+            continue
+    return ""

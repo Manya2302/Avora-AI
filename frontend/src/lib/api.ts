@@ -62,6 +62,10 @@ export const usersApi = {
   getSessions:    () => api.get('/users/sessions/'),
   revokeSession:  (id: number) => api.delete(`/users/sessions/${id}/`),
   revokeAllSessions: () => api.delete('/users/sessions/revoke-all/'),
+  revokeOtherSessions: () => api.delete('/users/sessions/revoke-all/', { params: { keep_current: 1 } }),
+  getSummary:     () => api.get('/users/me/summary/'),
+  getPreferences: () => api.get('/users/me/preferences/'),
+  updatePreferences: (data: Record<string, boolean>) => api.patch('/users/me/preferences/', data),
 }
 
 // ── Documents ─────────────────────────────────────────────────
@@ -80,6 +84,8 @@ export const documentsApi = {
   changeLogs:     (id: string) => api.get(`/documents/${id}/change_logs/`),
   saveVersion:    (id: string, raw_text: string) => api.post(`/documents/${id}/save_version/`, { raw_text }),
   risks:          (id: string) => api.get(`/documents/${id}/risks/`),
+  // Streams the decrypted original file (auth header required, so fetched as a blob)
+  download:       (id: string) => api.get(`/documents/${id}/download/`, { responseType: 'blob', timeout: 0 }),
 }
 
 // ── AI / Orivo ────────────────────────────────────────────────
@@ -91,6 +97,7 @@ export const orivoApi = {
 // ── Audit ─────────────────────────────────────────────────────
 export const auditApi = {
   getLogs: (params?: Record<string, unknown>) => api.get('/audit/logs/', { params }),
+  exportCsv: (params?: Record<string, unknown>) => api.get('/audit/logs/export/', { params, responseType: 'blob', timeout: 0 }),
 }
 
 // ── Admin ─────────────────────────────────────────────────────
@@ -104,6 +111,10 @@ export const adminApi = {
   audits:         (params?: Record<string, unknown>) => api.get('/admin-panel/audits/', { params }),
   security:       () => api.get('/admin-panel/security/'),
   storage:        () => api.get('/admin-panel/storage/'),
+  systemHealth:   () => api.get('/admin-panel/system-health/'),
+  securityEvents: (params?: Record<string, unknown>) => api.get('/admin-panel/security/', { params }),
+  settings:       () => api.get('/admin-panel/settings/'),
+  compliance:     () => api.get('/admin-panel/compliance/'),
 }
 
 export default api
@@ -150,6 +161,7 @@ export const complianceApi = {
   copilotHistory:   () => api.get('/compliance/copilot/history/'),
   timeline:         () => api.get('/compliance/timeline/'),
   recordCorrection: (data: Record<string,string>) => api.post('/compliance/training/correction/', data),
+  downloadPackage:  (id: string) => api.get(`/compliance/audit-packages/${id}/download/`, { responseType: 'blob', timeout: 300000 }),
 }
 
 // ── Phase 3: Contracts ────────────────────────────────────────
@@ -179,6 +191,7 @@ export const copilotApi = {
   dismissRecommendation: (id: string) => api.patch(`/copilot/recommendations/${id}/dismiss/`),
   dashboard:        () => api.get('/copilot/dashboard/'),
   multiDocAnalyze:  (data: Record<string, unknown>) => api.post('/copilot/analyze/', data),
+  openPrompt:       (id: string) => api.post(`/copilot/prompts/${id}/use/`),
 }
 
 // ── Phase 4: Knowledge Graph ───────────────────────────────────
@@ -226,8 +239,17 @@ export const integrationsApi = {
     api.post('/integrations/google-drive/credentials/', { client_id: clientId, client_secret: clientSecret }),
   gdOAuthUrl:        () => api.get('/integrations/google-drive/oauth-url/'),
   gdListFolders:     () => api.get('/integrations/google-drive/folders/'),
-  gdSaveFolders:     (folderIds: string[], folderNames: Record<string, string>) =>
-    api.post('/integrations/google-drive/folders/save/', { folder_ids: folderIds, folder_names: folderNames }),
+  // confirm=false → prescan only; confirm=true → start full sync
+  gdSaveFolders:     (folderIds: string[], folderNames: Record<string, string>, confirm = false) =>
+    api.post('/integrations/google-drive/folders/save/', { folder_ids: folderIds, folder_names: folderNames, confirm }),
+  gdConfirmImport:   (sessionId: string) =>
+    api.post('/integrations/google-drive/confirm/', { session_id: sessionId }),
+  gdProgress:        (sessionId?: string) =>
+    api.get('/integrations/google-drive/progress/', { params: sessionId ? { session_id: sessionId } : {} }),
+  gdRetryFailed:     (sessionId: string) =>
+    api.post('/integrations/google-drive/retry/', { session_id: sessionId }),
+  gdCancelSession:   (sessionId: string) =>
+    api.post('/integrations/google-drive/cancel/', { session_id: sessionId }),
   gdDisconnect:      () => api.post('/integrations/google-drive/disconnect/'),
   gdEvents:          () => api.get('/integrations/google-drive/events/'),
 

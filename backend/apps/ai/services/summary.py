@@ -14,9 +14,11 @@ def generate_summaries(document_id: str, text: str) -> dict:
 
     truncated = text[:6000]  # Keep within context window
 
-    short  = _call_ollama(f"Summarise this document in 1-2 sentences:\n\n{truncated}", max_tokens=120)
-    medium = _call_ollama(f"Write a concise 1-paragraph summary of this document:\n\n{truncated}", max_tokens=300)
-    long   = _call_ollama(f"Write a detailed analysis of this document including key parties, obligations, dates and risks:\n\n{truncated}", max_tokens=600)
+    # Three independent LLM calls → run concurrently (was sequential: up to 3 x 90 s)
+    from concurrent.futures import ThreadPoolExecutor
+    prompts = [(f"Summarise this document in 1-2 sentences:\n\n{truncated}", 120), (f"Write a concise 1-paragraph summary of this document:\n\n{truncated}", 300), (f"Write a detailed analysis of this document including key parties, obligations, dates and risks:\n\n{truncated}", 600)]
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        short, medium, long = ex.map(lambda a: _call_ollama(*a), prompts)
     points = _extract_key_points(truncated)
 
     # Persist to DB
@@ -38,8 +40,35 @@ def generate_summaries(document_id: str, text: str) -> dict:
     return {'short': short, 'medium': medium, 'long': long, 'key_points': points}
 
 
+def _call_groq(prompt: str, max_tokens: int):
+    import os
+    from utils.circuit_breaker import groq_cb
+    key = getattr(settings, "GROQ_API_KEY", None) or os.getenv("GROQ_API_KEY")
+    if not key or not groq_cb.is_healthy():
+        return None
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": os.getenv("GROQ_SUMMARY_MODEL", "llama-3.1-8b-instant"),
+                  "messages": [{"role": "user", "content": prompt}],
+                  "max_tokens": max_tokens, "temperature": 0.3},
+            timeout=20,
+        )
+        if resp.status_code == 200:
+            groq_cb.record_success()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        groq_cb.record_failure()
+    except requests.RequestException:
+        groq_cb.record_failure()
+    return None
+
+
 def _call_ollama(prompt: str, max_tokens: int = 300) -> str:
-    """Call Ollama chat completion."""
+    """Groq first (seconds), then local Ollama, then the extractive fallback."""
+    fast = _call_groq(prompt, max_tokens)
+    if fast:
+        return fast
     try:
         resp = requests.post(
             f"{settings.OLLAMA_HOST}/api/generate",

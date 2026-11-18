@@ -25,6 +25,8 @@ class Document(models.Model):
     status           = models.CharField(max_length=20, choices=Status.choices, default=Status.UPLOADING)
     version          = models.IntegerField(default=1)
     parent_document  = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL)
+    # Source checksum (e.g. Google Drive md5Checksum) — lets re-syncs skip unchanged files
+    content_hash     = models.CharField(max_length=128, blank=True, default='', db_index=True)
     is_deleted       = models.BooleanField(default=False)
     deleted_at       = models.DateTimeField(null=True, blank=True)
     created_at       = models.DateTimeField(auto_now_add=True)
@@ -34,6 +36,7 @@ class Document(models.Model):
         db_table = 'documents'
         ordering = ['-created_at']
         indexes = [
+            models.Index(fields=['owner', 'is_deleted', '-created_at']), models.Index(fields=['owner', 'is_deleted', 'status']), models.Index(fields=['owner', 'original_name', 'is_deleted']),
             models.Index(fields=['owner', '-created_at']),
             models.Index(fields=['status']),
         ]

@@ -21,6 +21,8 @@ class ContractListSerializer(serializers.ModelSerializer):
     risk_count     = serializers.SerializerMethodField()
     days_to_expiry = serializers.SerializerMethodField()
     def get_risk_count(self, o):
+        if hasattr(o, "open_risks"):
+            return o.open_risks
         return ContractRisk.objects.filter(contract=o, is_resolved=False).count()
     def get_days_to_expiry(self, o):
         return (o.expiry_date - date.today()).days if o.expiry_date else None
@@ -28,7 +30,8 @@ class ContractListSerializer(serializers.ModelSerializer):
         model  = ContractAnalysis
         fields = ["id","document_id","title","party_a","party_b","contract_type",
                   "effective_date","expiry_date","risk_level","risk_score","status",
-                  "contract_value","currency","risk_count","days_to_expiry","created_at"]
+                  "contract_value","currency","risk_count","days_to_expiry","created_at",
+                  "analysis_status","analysis_error","analyzed_at"]
 
 class ContractDetailSerializer(serializers.ModelSerializer):
     clauses = ContractClauseSerializer(many=True, read_only=True)

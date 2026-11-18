@@ -1,16 +1,31 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, AlertTriangle, CheckCircle2, Clock, FileText, Zap } from 'lucide-react'
+import { ArrowLeft, FileText, Zap } from 'lucide-react'
 import { contractsApi } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
 import Button from '@/components/shared/Button'
-import { formatDate } from '@/lib/utils'
+import EmptyState from '@/components/shared/EmptyState'
+import { cn, formatDate } from '@/lib/utils'
+import toast from 'react-hot-toast'
 
-const RV: Record<string,any> = { critical:'red', high:'amber', medium:'blue', low:'green' }
-const FC: Record<string,string> = { red:'bg-red-50 border-red-100', yellow:'bg-amber-50 border-amber-100', green:'bg-green-50 border-green-100' }
-const SV: Record<string,any> = { critical:'red', high:'red', medium:'amber', low:'blue', info:'gray' }
+/** Severity as a small dot + word. */
+const SEV_DOT: Record<string,string> = { critical:'bg-[#DC2626]', high:'bg-[#DC2626]', medium:'bg-[#D97706]', low:'bg-[#6B8DE3]', info:'bg-[#A8A49A]' }
+const RISK_DOT: Record<string,string> = { critical:'bg-[#DC2626]', high:'bg-[#D97706]', medium:'bg-[#6B8DE3]', low:'bg-[#86C79A]' }
+const FLAG: Record<string,{ dot:string; label:string }> = {
+  red:    { dot:'bg-[#DC2626]', label:'High risk' },
+  yellow: { dot:'bg-[#D97706]', label:'Worth a look' },
+  green:  { dot:'bg-[#16A34A]', label:'Standard' },
+}
+
+function Dot({ className, children }: { className?: string; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-[12.5px] capitalize text-[#5A5750]">
+      <span className={cn('h-1.5 w-1.5 rounded-full', className || 'bg-[#A8A49A]')}/>{children}
+    </span>
+  )
+}
 
 export default function ContractDetailPage({ id }: { id: string }) {
   const router = useRouter()
@@ -24,135 +39,234 @@ export default function ContractDetailPage({ id }: { id: string }) {
     contractsApi.detail(id).then(r=>setContract(r.data)).catch(()=>{}).finally(()=>setLoading(false))
   }, [id])
 
+  const [savingAction, setSavingAction] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (pollRef.current) clearTimeout(pollRef.current) }, [])
+
+  const refresh = () => contractsApi.detail(id).then(r => { setContract(r.data); return r.data })
+
   const analyze = async () => {
     if (!contract?.document_id) return
     setAna(true)
     try {
       await contractsApi.analyze(contract.document_id)
-      contractsApi.detail(id).then(r=>setContract(r.data))
-    } catch {} finally { setAna(false) }
+      toast.success('Re-analysis started. This page updates when it finishes.')
+      // Analysis runs in the background — poll until it is no longer running (max ~3 minutes)
+      let tries = 0
+      const poll = () => {
+        pollRef.current = setTimeout(async () => {
+          tries += 1
+          try {
+            const c = await refresh()
+            if (c?.analysis_status === 'running' && tries < 60) return poll()
+            if (c?.analysis_status === 'failed') toast.error('Re-analysis failed. Try again later.')
+            else if (c?.analysis_status === 'running') toast('Re-analysis is still running. Check back shortly.')
+            else toast.success('Contract re-analysed.')
+          } catch {
+            toast.error('Couldn’t refresh the contract.')
+          }
+          setAna(false)
+        }, 3000)
+      }
+      poll()
+    } catch (e: any) {
+      toast.error(e?.response?.data?.error || 'Couldn’t start re-analysis. Try again.')
+      setAna(false)
+    }
   }
 
-  if (loading) return <div className="flex items-center justify-center h-64 text-sm text-[#9B9890]">Loading contract…</div>
-  if (!contract) return <div className="text-center py-20 text-sm text-[#9B9890]">Contract not found.</div>
+  const setRenewalAction = async (action: string) => {
+    if (!contract?.renewal?.id || savingAction) return
+    setSavingAction(action)
+    try {
+      await contractsApi.updateRenewal(contract.renewal.id, { action })
+      await refresh()
+      toast.success(`Renewal decision set to ${action}.`)
+    } catch {
+      toast.error('Couldn’t save the renewal decision. Try again.')
+    } finally { setSavingAction(null) }
+  }
+
+  if (loading) return (
+    <div className="space-y-6">
+      <div className="h-8 w-64 animate-pulse rounded-[6px] bg-[#ECEAE4]"/>
+      <Card><div className="space-y-3 p-5">{[0,1,2].map(i=><div key={i} className="h-10 animate-pulse rounded-[6px] bg-[#F1EFEA]"/>)}</div></Card>
+    </div>
+  )
+  if (!contract) return (
+    <Card>
+      <EmptyState icon={<FileText/>} title="Contract not found"
+        action={<Button variant="ghost" size="sm" onClick={()=>router.back()}><ArrowLeft className="h-3.5 w-3.5"/> Go back</Button>}>
+        It may have been deleted, or you may not have access to it.
+      </EmptyState>
+    </Card>
+  )
+
+  const tabs: [string, string, number | undefined][] = [
+    ['overview','Overview', undefined],
+    ['clauses','Clauses', contract.clauses?.length],
+    ['risks','Risks', contract.risks?.length],
+    ['renewal','Renewal', undefined],
+  ]
 
   return (
-    <div className="space-y-5 max-w-5xl">
-      <button onClick={()=>router.back()} className="flex items-center gap-2 text-sm text-[#9B9890] hover:text-[#0E0D0A]"><ArrowLeft className="w-4 h-4"/> Back</button>
-
-      <div className="bg-[#0C0B09] rounded-[16px] p-7 relative overflow-hidden">
-        <div className="absolute bottom-0 left-0 w-64 h-64 bg-[#1A3DAF]/10 rounded-full blur-3xl pointer-events-none"/>
-        <div className="relative z-10 flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex-1">
-            <p className="font-mono text-[10px] text-[#7B9FE8] uppercase tracking-[1.5px] mb-2">{contract.contract_type||'Contract'}</p>
-            <h2 className="font-display text-2xl font-bold text-white/92 mb-2">{contract.title}</h2>
-            {(contract.party_a||contract.party_b) && <p className="text-white/45 text-sm mb-4">{contract.party_a} {contract.party_a&&contract.party_b?'↔':''} {contract.party_b}</p>}
-            <div className="flex gap-2 flex-wrap">
-              <Badge variant={RV[contract.risk_level]}>{contract.risk_level} risk</Badge>
-              {contract.risks?.length>0 && <span className="font-mono text-[9.5px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/20">{contract.risks.length} risks</span>}
-              <span className="font-mono text-[9.5px] px-2 py-0.5 rounded-full bg-white/8 text-white/40 border border-white/10">{contract.status}</span>
+    <div className="space-y-6">
+      <div>
+        <button onClick={()=>router.back()} className="-ml-1 mb-3 inline-flex items-center gap-1.5 rounded-[6px] px-1 py-0.5 text-[13px] text-[#8A877F] hover:text-[#0E0D0A]">
+          <ArrowLeft className="h-3.5 w-3.5"/> Back
+        </button>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div className="min-w-0">
+            <p className="mb-1 text-[13px] capitalize text-[#8A877F]">{contract.contract_type||'Contract'}</p>
+            <h1 className="page-title">{contract.title}</h1>
+            {(contract.party_a||contract.party_b) && (
+              <p className="page-subtitle">{contract.party_a} {contract.party_a&&contract.party_b?'·':''} {contract.party_b}</p>
+            )}
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+              <span className="inline-flex items-center gap-1.5 text-[13px] capitalize text-[#2B2924]">
+                <span className={cn('h-1.5 w-1.5 rounded-full', RISK_DOT[contract.risk_level]||'bg-[#A8A49A]')}/>{contract.risk_level} risk
+              </span>
+              {contract.risks?.length>0 && <span className="text-[13px] text-[#5A5750]">{contract.risks.length} risk{contract.risks.length>1?'s':''} found</span>}
+              <Badge variant="gray"><span className="capitalize">{contract.status}</span></Badge>
             </div>
           </div>
-          <Button loading={ana} onClick={analyze} className="bg-white text-[#0E0D0A] border-white hover:bg-[#F7F5F0]" size="sm"><Zap className="w-3.5 h-3.5"/> Re-Analyze</Button>
+          <Button variant="ghost" size="sm" loading={ana} onClick={analyze}><Zap className="h-3.5 w-3.5"/> Re-analyse</Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[{l:'Effective',v:contract.effective_date?formatDate(contract.effective_date):'—'},
-          {l:'Expiry',v:contract.expiry_date?formatDate(contract.expiry_date):'—',warn:contract.renewal?.days_until<=60},
-          {l:'Value',v:contract.contract_value?`${contract.currency} ${Number(contract.contract_value).toLocaleString()}`:'—'},
-          {l:'Notice Period',v:contract.notice_period_days?`${contract.notice_period_days}d`:'—'}].map(f=>(
-          <div key={f.l} className={`p-3.5 border rounded-[11px] ${f.warn?'bg-amber-50 border-amber-100':'bg-white border-[#DDD9D0]'}`}>
-            <p className="font-mono text-[10px] text-[#9B9890] mb-1">{f.l}</p>
-            <p className={`text-sm font-semibold ${f.warn?'text-amber-700':'text-[#0E0D0A]'}`}>{f.v}</p>
-          </div>
-        ))}
-      </div>
+      <Card>
+        <dl className="grid grid-cols-2 md:grid-cols-4">
+          {[{l:'Effective',v:contract.effective_date?formatDate(contract.effective_date):'—'},
+            {l:'Expiry',v:contract.expiry_date?formatDate(contract.expiry_date):'—',warn:contract.renewal?.days_until<=60},
+            {l:'Value',v:contract.contract_value?`${contract.currency} ${Number(contract.contract_value).toLocaleString()}`:'—'},
+            {l:'Notice period',v:contract.notice_period_days?`${contract.notice_period_days} days`:'—'}].map((f,i)=>(
+            <div key={f.l} className={cn('px-5 py-4', i%2===1 && 'border-l border-[#F1EFEA]', i>=2 && 'border-t border-[#F1EFEA] md:border-t-0', i>=1 && 'md:border-l md:border-[#F1EFEA]')}>
+              <dt className="flex items-center gap-1.5 text-[12.5px] text-[#8A877F]">
+                {f.warn && <span className="h-1.5 w-1.5 rounded-full bg-[#D97706]"/>}{f.l}
+              </dt>
+              <dd className={cn('mt-1 text-[14px] font-medium tabular-nums', f.warn?'text-[#A35A04]':'text-[#0E0D0A]')}>{f.v}</dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
 
-      <div className="flex gap-1 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[11px] p-1">
-        {[['overview','Overview'],['clauses','Clauses'],['risks','Risks'],['renewal','Renewal']].map(([k,l])=>(
-          <button key={k} onClick={()=>setTab(k as any)}
-            className={`flex-1 py-2 rounded-[8px] text-xs font-medium transition-all ${tab===k?'bg-white text-[#0E0D0A] shadow-sm':'text-[#9B9890]'}`}>{l}</button>
+      <div className="flex gap-6 overflow-x-auto border-b border-[#DDD9D0]" role="tablist">
+        {tabs.map(([k,l,n])=>(
+          <button key={k} role="tab" aria-selected={tab===k} onClick={()=>setTab(k as any)}
+            className={cn(
+              '-mb-px flex shrink-0 items-center gap-2 border-b-2 pb-2.5 text-[14px] transition-colors',
+              tab===k ? 'border-[#0E0D0A] font-medium text-[#0E0D0A]' : 'border-transparent text-[#8A877F] hover:text-[#2B2924]'
+            )}>
+            {l}
+            {!!n && <span className="text-[12.5px] tabular-nums text-[#8A877F]">{n}</span>}
+          </button>
         ))}
       </div>
 
       {tab==='overview' && contract.key_obligations?.length>0 && (
-        <Card><CardHeader title="Key Obligations"/>
-          <CardBody><ul className="space-y-2">{contract.key_obligations.map((o:string,i:number)=>(
-            <li key={i} className="flex items-start gap-2.5 text-sm text-[#5A5750]">
-              <div className="w-5 h-5 rounded-full bg-[#EBF0FF] flex items-center justify-center font-mono text-[9px] font-bold text-[#1A3DAF] flex-shrink-0 mt-0.5">{i+1}</div>{o}
+        <Card><CardHeader title="Key obligations"/>
+          <ol>{contract.key_obligations.map((o:string,i:number)=>(
+            <li key={i} className="flex items-start gap-3 border-t border-[#F1EFEA] px-5 py-3 text-[14px] leading-relaxed text-[#2B2924] first:border-0">
+              <span className="w-5 shrink-0 text-right text-[13px] tabular-nums text-[#8A877F]">{i+1}.</span>{o}
             </li>
-          ))}</ul></CardBody>
+          ))}</ol>
+        </Card>
+      )}
+      {tab==='overview' && !(contract.key_obligations?.length>0) && (
+        <Card>
+          <EmptyState title="No obligations extracted">
+            Re-analyse the contract to pull out who has to do what, and by when.
+          </EmptyState>
         </Card>
       )}
 
       {tab==='clauses' && (
-        <div className="space-y-3">
-          {!contract.clauses?.length ? <div className="text-center py-12 text-sm text-[#9B9890]">No clauses extracted. Click Re-Analyze.</div>
-          : contract.clauses.map((c:any)=>(
-            <div key={c.id} className={`p-4 border rounded-[12px] ${FC[c.risk_flag]}`}>
-              <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
-                <span className="font-semibold text-[#0E0D0A] text-sm">{c.title}</span>
-                <Badge variant={c.risk_flag==='red'?'red':c.risk_flag==='yellow'?'amber':'green'}>{c.risk_flag} risk</Badge>
-              </div>
-              {c.ai_summary && <p className="text-xs text-[#5A5750] mb-2">{c.ai_summary}</p>}
-              {c.risk_reason && <p className="text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded-[6px]">⚠ {c.risk_reason}</p>}
-            </div>
-          ))}
-        </div>
+        !contract.clauses?.length ? (
+          <Card>
+            <EmptyState title="No clauses extracted yet">Choose Re-analyse to read the contract clause by clause.</EmptyState>
+          </Card>
+        ) : (
+          <Card>
+            <ul>
+              {contract.clauses.map((c:any)=>(
+                <li key={c.id} className="border-t border-[#F1EFEA] px-5 py-4 first:border-0">
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    <span className="text-[14px] font-medium text-[#0E0D0A]">{c.title}</span>
+                    <Dot className={FLAG[c.risk_flag]?.dot}>{FLAG[c.risk_flag]?.label || `${c.risk_flag} risk`}</Dot>
+                  </div>
+                  {c.ai_summary && <p className="mt-1.5 text-[13.5px] leading-relaxed text-[#5A5750]">{c.ai_summary}</p>}
+                  {c.risk_reason && (
+                    <p className="mt-2 border-l-2 border-[#D97706] pl-3 text-[13px] leading-relaxed text-[#2B2924]">{c.risk_reason}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )
       )}
 
       {tab==='risks' && (
-        <div className="space-y-3">
-          {!contract.risks?.length ? <div className="text-center py-12 text-sm text-[#9B9890]">No risks detected. Click Re-Analyze.</div>
-          : contract.risks.map((r:any)=>(
-            <div key={r.id} className="p-4 bg-white border border-[#DDD9D0] rounded-[12px]">
-              <div className="flex items-start justify-between gap-3 mb-2 flex-wrap">
-                <div className="flex items-center gap-2.5">
-                  <AlertTriangle className={`w-4 h-4 flex-shrink-0 ${r.severity==='critical'||r.severity==='high'?'text-red-500':r.severity==='medium'?'text-amber-500':'text-blue-500'}`}/>
-                  <span className="font-semibold text-[#0E0D0A] text-sm">{r.title}</span>
-                </div>
-                <div className="flex gap-1.5">
-                  <Badge variant={SV[r.severity]}>{r.severity}</Badge>
-                  <Badge variant="gray">{r.category}</Badge>
-                </div>
-              </div>
-              <p className="text-xs text-[#5A5750] mb-2">{r.description}</p>
-              {r.recommendation && <div className="flex items-start gap-2 p-2.5 bg-[#EBF0FF] rounded-[8px]">
-                <CheckCircle2 className="w-3.5 h-3.5 text-[#1A3DAF] flex-shrink-0 mt-0.5"/>
-                <p className="text-xs text-[#1A3DAF]">{r.recommendation}</p>
-              </div>}
-            </div>
-          ))}
-        </div>
+        !contract.risks?.length ? (
+          <Card>
+            <EmptyState title="No risks found">Nothing stood out in the last review. Re-analyse after the contract changes.</EmptyState>
+          </Card>
+        ) : (
+          <Card>
+            <ul>
+              {contract.risks.map((r:any)=>(
+                <li key={r.id} className="border-t border-[#F1EFEA] px-5 py-4 first:border-0">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    <span className="min-w-0 flex-1 text-[14px] font-medium text-[#0E0D0A]">{r.title}</span>
+                    <Dot className={SEV_DOT[r.severity]}>{r.severity}</Dot>
+                    {r.category && <Badge variant="gray"><span className="capitalize">{r.category}</span></Badge>}
+                  </div>
+                  <p className="mt-1.5 text-[13.5px] leading-relaxed text-[#5A5750]">{r.description}</p>
+                  {r.recommendation && (
+                    <div className="mt-2.5 rounded-[8px] border border-[#ECEAE4] bg-[#FBFAF7] px-3 py-2">
+                      <p className="mb-0.5 text-[12px] text-[#8A877F]">Suggested change</p>
+                      <p className="text-[13px] leading-relaxed text-[#2B2924]">{r.recommendation}</p>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Card>
+        )
       )}
 
       {tab==='renewal' && (
-        <Card><CardHeader title="Renewal Tracking"/>
-          <CardBody>
-            {!contract.renewal ? <p className="text-sm text-[#9B9890] text-center py-8">No renewal data. Add an expiry date first.</p>
-            : <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-3">
-                {[{l:'Renewal Due',v:formatDate(contract.renewal.renewal_due)},
-                  {l:'Notice Deadline',v:contract.renewal.notice_deadline?formatDate(contract.renewal.notice_deadline):'—'},
-                  {l:'Days Until',v:`${contract.renewal.days_until}d`,warn:contract.renewal.days_until<=30}].map(f=>(
-                  <div key={f.l} className={`p-3 rounded-[9px] border text-center ${f.warn?'bg-red-50 border-red-100':'bg-[#F7F5F0] border-[#ECEAE4]'}`}>
-                    <p className="font-mono text-[10px] text-[#9B9890] mb-1">{f.l}</p>
-                    <p className={`font-semibold text-sm ${f.warn?'text-red-600':'text-[#0E0D0A]'}`}>{f.v}</p>
+        <Card><CardHeader title="Renewal"/>
+          {!contract.renewal ? (
+            <EmptyState title="No renewal date yet">Add an expiry date to the contract to start tracking its renewal.</EmptyState>
+          ) : (
+            <CardBody className="space-y-5">
+              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                {[{l:'Renewal due',v:formatDate(contract.renewal.renewal_due)},
+                  {l:'Notice deadline',v:contract.renewal.notice_deadline?formatDate(contract.renewal.notice_deadline):'—'},
+                  {l:'Days left',v:`${contract.renewal.days_until}`,warn:contract.renewal.days_until<=30}].map(f=>(
+                  <div key={f.l}>
+                    <dt className="flex items-center gap-1.5 text-[12.5px] text-[#8A877F]">
+                      {f.warn && <span className="h-1.5 w-1.5 rounded-full bg-[#DC2626]"/>}{f.l}
+                    </dt>
+                    <dd className={cn('mt-1 font-display text-[22px] font-semibold leading-tight tabular-nums', f.warn?'text-[#B91C1C]':'text-[#0E0D0A]')}>{f.v}</dd>
                   </div>
                 ))}
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-[#0E0D0A] mb-2 block">Renewal Decision</label>
-                <div className="flex gap-2">
+              </dl>
+              <div className="border-t border-[#ECEAE4] pt-4">
+                <p className="mb-2 text-[13px] font-medium text-[#0E0D0A]">Renewal decision</p>
+                <div className="inline-flex flex-wrap rounded-[8px] border border-[#DDD9D0] bg-white p-0.5" role="group" aria-label="Renewal decision">
                   {['renew','negotiate','terminate','pending'].map(a=>(
-                    <button key={a} onClick={()=>contractsApi.updateRenewal(contract.renewal.id,{action:a})}
-                      className={`px-3 py-2 rounded-[8px] text-xs font-medium border transition-all capitalize ${contract.renewal.action===a?'bg-[#0E0D0A] text-white border-[#0E0D0A]':'bg-white border-[#DDD9D0] text-[#5A5750] hover:border-[#0E0D0A]'}`}>{a}</button>
+                    <button key={a} onClick={()=>setRenewalAction(a)} aria-pressed={contract.renewal.action===a} disabled={!!savingAction}
+                      className={cn(
+                        'h-8 rounded-[6px] px-3 text-[13px] capitalize transition-colors disabled:cursor-not-allowed',
+                        savingAction===a && 'opacity-60',
+                        contract.renewal.action===a ? 'bg-[#0E0D0A] font-medium text-[#F7F5F0]' : 'text-[#5A5750] hover:bg-[#F1EFEA] hover:text-[#0E0D0A]'
+                      )}>{a}</button>
                   ))}
                 </div>
               </div>
-            </div>}
-          </CardBody>
+            </CardBody>
+          )}
         </Card>
       )}
     </div>

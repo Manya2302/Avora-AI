@@ -23,6 +23,33 @@ def reset_all_data():
     except Exception as e:
         print(f"   ❌ Failed to delete documents: {e}")
 
+    # 1.5 DELETE DECOUPLED CONTRACT AND COMPLIANCE RECORDS
+    print("1.5. Deleting decoupled Contract and Compliance records...")
+    try:
+        from apps.contracts.models import ContractAnalysis, ContractClause, ContractRisk, ContractRenewal
+        from apps.compliance.models import ComplianceProfile, MissingDocument, ExpiryAlert, AuditPackage, ComplianceCopilotChat, ComplianceTimeline, ComplianceRisk, ComplianceCheckResult
+
+        # Contracts
+        ca_count, _ = ContractAnalysis.objects.all().delete()
+        cc_count, _ = ContractClause.objects.all().delete()
+        cr_count, _ = ContractRisk.objects.all().delete()
+        cren_count, _ = ContractRenewal.objects.all().delete()
+        
+        # Compliance
+        cp_count, _ = ComplianceProfile.objects.all().delete()
+        md_count, _ = MissingDocument.objects.all().delete()
+        ea_count, _ = ExpiryAlert.objects.all().delete()
+        ap_count, _ = AuditPackage.objects.all().delete()
+        ccc_count, _ = ComplianceCopilotChat.objects.all().delete()
+        ct_count, _ = ComplianceTimeline.objects.all().delete()
+        risk_count, _ = ComplianceRisk.objects.all().delete()
+        chk_count, _ = ComplianceCheckResult.objects.all().delete()
+
+        total_deleted = ca_count + cc_count + cr_count + cren_count + cp_count + md_count + ea_count + ap_count + ccc_count + ct_count + risk_count + chk_count
+        print(f"   ✅ Deleted {total_deleted} decoupled contract and compliance records.")
+    except Exception as e:
+        print(f"   ❌ Failed to delete contract and compliance records: {e}")
+
     # 2. RESET INTEGRATION STATUSES
     print("2. Deep Resetting Integration tracking (Google Drive, GitHub, etc.)...")
     try:

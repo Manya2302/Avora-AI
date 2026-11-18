@@ -91,7 +91,7 @@ def _value(text):
     m = re.search(r"(?:contract value|total value|consideration)[:\s]+(?:₹|Rs\.?|INR|USD|\$)?\s*([\d,]+(?:\.\d{2})?)", text, re.I)
     if m:
         try: return float(m.group(1).replace(",",""))
-        except: pass
+        except Exception: pass
     return None
 
 def _currency(text):

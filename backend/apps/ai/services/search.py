@@ -4,7 +4,6 @@ Supports filters, suggestions, analytics logging.
 """
 import logging, time
 from django.conf import settings
-from .embeddings import generate_embedding
 logger = logging.getLogger(__name__)
 
 
@@ -21,79 +20,35 @@ def semantic_search(
     """
     t0 = time.time()
     try:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-        from utils.qdrant_client import get_client
-
-        vector  = generate_embedding(query, is_query=True)
-        client  = get_client()
-
-        # Build Qdrant filter
-        must = [FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]
-        if filters:
-            if filters.get('category'):
-                must.append(FieldCondition(key="category", match=MatchValue(value=filters['category'])))
-            if filters.get('confidentiality'):
-                must.append(FieldCondition(key="confidentiality", match=MatchValue(value=filters['confidentiality'])))
-
-        def _run(qfilter):
-            return client.query_points(
-                collection_name=settings.QDRANT_COLLECTION,
-                query=vector,
-                query_filter=qfilter,
-                limit=top_k,
-                with_payload=True,
-            )
-
-        # Try filtered first; fall back to unfiltered if payload index missing
-        try:
-            res = _run(Filter(must=must))
-        except Exception as fe:
-            if "Index required" in str(fe) or "400" in str(fe):
-                logger.warning(
-                    "[RAG Search] Payload index missing — unfiltered fallback. "
-                    "Run: python create_qdrant_indexes.py to fix permanently."
-                )
-                res = _run(None)
-            else:
-                raise
-
-        hits = res.points
-
+        from .retrieval import retrieve_chunks
+        chunks = retrieve_chunks([query], user=user, owner_id=owner_id, limit_per_query=max(top_k * 3, 30),
+                                 filters=filters or {}, max_results=200)
         unique_docs = {}
-        for r in hits:
-            payload = r.payload or {}
-            # Python-side ownership enforcement for fallback path
-            point_owner = payload.get("owner_id", "")
-            if point_owner and str(point_owner) != str(owner_id):
-                continue
-
-            doc_id = payload.get('document_id')
-            if not doc_id: continue
-            if doc_id not in unique_docs or r.score > unique_docs[doc_id]['score_raw']:
-                unique_docs[doc_id] = {
-                    'document_id':    str(doc_id),
-                    'original_name':  payload.get('original_name', ''),
-                    'category':       payload.get('category', ''),
-                    'tags':           payload.get('tags', []),
-                    'short_summary':  payload.get('chunk_text', payload.get('short_summary', ''))[:150].strip() + '...',
-                    'confidentiality':payload.get('confidentiality', 'internal'),
-                    'score_raw':      r.score,
-                    'score':          round(r.score * 100, 1),
+        for c in chunks:
+            d = c["document_id"]
+            if d not in unique_docs or c["score"] > unique_docs[d]["score_raw"]:
+                unique_docs[d] = {
+                    'document_id':    d,
+                    'original_name':  c.get('original_name', ''),
+                    'category':       c.get('category', ''),
+                    'tags':           [],
+                    'short_summary':  (c.get('text') or '')[:150].strip() + '...',
+                    'confidentiality': c.get('confidentiality', 'internal'),
+                    'page':           c.get('page_start') or None,
+                    'score_raw':      c["score"],
+                    'score':          round(c["score"] * 100, 1),
                 }
-
         results = sorted(unique_docs.values(), key=lambda x: -x['score_raw'])[:top_k]
         for r in results:
             r.pop('score_raw', None)
 
         elapsed = int((time.time() - t0) * 1000)
-
         if user:
             _log_search(user, query, len(results), elapsed, filters or {})
-
         return {'results': results, 'count': len(results), 'elapsed_ms': elapsed, 'query': query}
 
-    except Exception as e:
-        logger.exception(f"[Avora Search] Error:")
+    except Exception:
+        logger.exception("[Avora Search] Error:")
         return {'results': [], 'count': 0, 'elapsed_ms': 0, 'query': query}
 
 

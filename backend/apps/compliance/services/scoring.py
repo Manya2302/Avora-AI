@@ -55,83 +55,82 @@ INDUSTRY_REQUIREMENTS = {
 PRIORITY_WEIGHTS = {"critical":40,"high":25,"medium":15,"low":5}
 STATUS_SCORES    = {"compliant":100,"expiring_soon":65,"needs_review":50,"expired":10,"missing":0}
 
+MAX_CHECKS_RETURNED = 500
+
+
 def compute_compliance_score(owner, industry: str) -> dict:
+    """Same response shape as before, in 4 queries (was ~9 plus two full iterations),
+    with a bounded `checks` list, and the profile is written only when the score changes
+    (it used to be written on every dashboard GET)."""
+    from django.db.models import Count, Q
     from apps.compliance.models import ComplianceProfile, ComplianceCheckResult, ComplianceRisk
     from apps.documents.models import Document
 
-    user_docs = Document.objects.filter(owner=owner, is_deleted=False, status="ai_ready")
-    total_docs = user_docs.count()
-    
-    # 1. Compliance Engine (Facts / Checks)
-    all_facts = ComplianceCheckResult.objects.filter(owner=owner, is_ignored=False)
-    total_checks = all_facts.count()
-    missing_facts = all_facts.filter(status__icontains="Missing")
-    present_facts = all_facts.filter(status__icontains="Present")
-    
-    missing_count = missing_facts.count()
-    
-    # Dynamic Scoring Logic for Compliance
-    # Base 100, deduct points for missing required clauses
+    total_docs = Document.objects.filter(owner=owner, is_deleted=False, status="ai_ready").count()
+
+    facts_qs = ComplianceCheckResult.objects.filter(owner=owner, is_ignored=False)
+    agg = facts_qs.aggregate(
+        total=Count("id"),
+        missing=Count("id", filter=Q(status__icontains="Missing")),
+        present=Count("id", filter=Q(status__icontains="Present")),
+    )
+    total_checks, missing_count = agg["total"], agg["missing"]
+
     if total_checks > 0:
         compliance_score = max(0, 100 - (missing_count * 10))
     else:
         compliance_score = 0 if total_docs > 0 else 100
-        
-    # 2. Risk Engine (Business Impact) -> used only for audit readiness penalty here
-    all_risks = ComplianceRisk.objects.filter(owner=owner, is_resolved=False)
-    critical_risks = all_risks.filter(severity="critical").count()
-    high_risks = all_risks.filter(severity="high").count()
-    
-    # Audit Readiness: 100% minus critical/high risk penalty
-    audit_readiness_pct = max(0, compliance_score - (critical_risks * 15) - (high_risks * 5))
-    
-    # Format missing docs/clauses list for the dashboard
-    missing_list = []
-    for fact in missing_facts:
-        missing_list.append({
-            "name": fact.requirement,
-            "priority": "high",
-            "doc_type": fact.doc_name
-        })
 
-    # Format all checks list for the dashboard
-    checks = []
+    risk = ComplianceRisk.objects.filter(owner=owner, is_resolved=False).aggregate(
+        critical=Count("id", filter=Q(severity="critical")),
+        high=Count("id", filter=Q(severity="high")),
+    )
+    critical_risks, high_risks = risk["critical"], risk["high"]
+    audit_readiness_pct = max(0, compliance_score - (critical_risks * 15) - (high_risks * 5))
+
+    missing_list, checks = [], []
     if total_docs == 0:
-        checks.append({"id": "0", "name": "Upload any document to begin", "status": "missing", "priority": "high", "doc_type": "general", "score": 0, "location": "", "description": ""})
-    else:
-        for fact in all_facts:
+        checks.append({"id": "0", "name": "Upload any document to begin", "status": "missing", "priority": "high",
+                       "doc_type": "general", "score": 0, "location": "", "description": ""})
+    facts = facts_qs.only("id", "requirement", "status", "doc_name", "location", "description") \
+        .order_by("-created_at")[:MAX_CHECKS_RETURNED] if total_checks else []
+    for fact in facts:
+        is_missing = "missing" in (fact.status or "").lower()
+        if is_missing:
+            missing_list.append({"name": fact.requirement, "priority": "high", "doc_type": fact.doc_name})
+        if total_docs:
             checks.append({
                 "id": str(fact.id),
                 "name": fact.requirement,
-                "status": "missing" if "missing" in fact.status.lower() else "compliant",
+                "status": "missing" if is_missing else "compliant",
                 "priority": "medium",
                 "doc_type": fact.doc_name,
-                "score": 0 if "missing" in fact.status.lower() else 100,
+                "score": 0 if is_missing else 100,
                 "location": fact.location,
-                "description": fact.description
+                "description": fact.description,
             })
-            
-    # Add a pseudo "Compliant" check if score is high
+
     if compliance_score >= 80 and total_checks > 0:
-        checks.append({"name": "General Compliance Posture", "status": "compliant", "priority": "low", "doc_type": "general", "score": 100})
+        checks.append({"name": "General Compliance Posture", "status": "compliant", "priority": "low",
+                       "doc_type": "general", "score": 100})
 
     try:
-        profile, _ = ComplianceProfile.objects.get_or_create(owner=owner, defaults={"industry":industry})
-        profile.compliance_score    = compliance_score
-        profile.audit_readiness_pct = audit_readiness_pct
-        profile.last_scored_at      = timezone.now()
-        profile.save()
+        profile, created = ComplianceProfile.objects.get_or_create(owner=owner, defaults={"industry": industry})
+        if created or profile.compliance_score != compliance_score or profile.audit_readiness_pct != audit_readiness_pct:
+            ComplianceProfile.objects.filter(pk=profile.pk).update(
+                compliance_score=compliance_score, audit_readiness_pct=audit_readiness_pct,
+                last_scored_at=timezone.now())
     except Exception as e:
         logger.error(f"[Score] {e}")
 
     return {
-        "score": compliance_score, 
+        "score": compliance_score,
         "audit_readiness": audit_readiness_pct,
-        "total_checks": total_checks if total_checks > 0 else 1, 
-        "compliant": present_facts.count(),
-        "missing_count": missing_count, 
+        "total_checks": total_checks if total_checks > 0 else 1,
+        "compliant": agg["present"],
+        "missing_count": missing_count,
         "critical_missing": critical_risks,
-        "checks": checks, 
+        "checks": checks,
         "missing": missing_list,
         "grade": _grade(compliance_score),
         "recommendation": _recommend(compliance_score, missing_list),

@@ -25,13 +25,14 @@ def generate_recommendations(document_id: str, owner_id: str, limit: int = 6) ->
             'reason':         item['label'],
         }
         recs.append(rec)
-        try:
-            DocumentRecommendation.objects.update_or_create(
-                document_id=document_id,
-                recommended_document_id=item['document_id'],
-                defaults={'score': item['similarity_score'] / 100, 'reason': item['label']},
-            )
-        except Exception:
-            pass
 
+    # Replace this document's cached recommendations in one transaction (was N update_or_create)
+    from django.db import transaction
+    with transaction.atomic():
+        DocumentRecommendation.objects.filter(document_id=document_id).delete()
+        DocumentRecommendation.objects.bulk_create([
+            DocumentRecommendation(document_id=document_id, recommended_document_id=r['document_id'],
+                                   score=r['score'] / 100, reason=r['reason'])
+            for r in recs if r.get('document_id')
+        ])
     return recs

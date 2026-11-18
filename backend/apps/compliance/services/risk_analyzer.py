@@ -15,8 +15,9 @@ def analyze_compliance_risk(document_id: str, owner, text: str, doc_name: str):
     logger.info(f"[Compliance] Starting two-engine scan for {document_id}")
     
     # Delete old results so we don't accumulate duplicates on edits
-    ComplianceRisk.objects.filter(document_id=document_id).delete()
-    ComplianceCheckResult.objects.filter(document_id=document_id).delete()
+    # Scoped to this owner: never wipe another tenant's results for the same document id
+    ComplianceRisk.objects.filter(document_id=document_id, owner=owner).delete()
+    ComplianceCheckResult.objects.filter(document_id=document_id, owner=owner).delete()
     
     from apps.documents.models import DocumentMetadata
     industry_edition = "generic"

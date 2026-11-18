@@ -52,6 +52,15 @@ def get_oauth_url(client_id: str, client_secret: str, redirect_uri: str, state: 
     return f"https://accounts.google.com/o/oauth2/auth?{qs}"
 
 
+def _expiry_from(expires_in):
+    from datetime import timedelta
+    from django.utils import timezone
+    try:
+        return timezone.now() + timedelta(seconds=int(expires_in))
+    except (TypeError, ValueError):
+        return timezone.now() + timedelta(hours=1)
+
+
 def exchange_code(
     client_id: str,
     client_secret: str,
@@ -72,14 +81,15 @@ def exchange_code(
     }, timeout=15)
     
     if not resp.ok:
-        raise ValueError(f"OAuth token exchange failed: {resp.text}")
+        raise ValueError(f"OAuth token exchange failed (HTTP {resp.status_code})")
         
     data = resp.json()
     
     return {
         'access_token':  data.get('access_token', ''),
         'refresh_token': data.get('refresh_token', ''),
-        'expiry':        None, # Google access tokens typically expire in 1hr
+        # Real expiry (was always None, so tokens were never refreshed and sync broke after ~1h)
+        'expiry':        _expiry_from(data.get('expires_in')),
         'scopes':        data.get('scope', '').split(' '),
     }
 

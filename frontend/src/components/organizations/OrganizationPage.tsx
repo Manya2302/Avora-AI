@@ -1,369 +1,603 @@
 'use client'
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import {
-  Building2, Users, Shield, Network, ChevronRight,
-  Plus, Edit2, Trash2, UserCheck, Lock, Globe, Share2, Layers
-} from 'lucide-react'
-import api from '@/lib/api'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronRight, Plus, Search, Users, Building2, Trash2, Pencil, Lock, Share2, Globe, Layers } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { Card, CardHeader, CardBody } from '@/components/shared/Card'
-import Badge from '@/components/shared/Badge'
+import { orgApi } from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
+import { cn, getInitials } from '@/lib/utils'
+import { Card } from '@/components/shared/Card'
 import Button from '@/components/shared/Button'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
+import Modal from '@/components/shared/Modal'
 
-// ── API helpers ──────────────────────────────────────────────
-const orgApi = {
-  tree:            () => api.get('/org/tree/'),
-  departments:     () => api.get('/org/departments/'),
-  createDept:      (d: any) => api.post('/org/departments/', d),
-  deleteDept:      (id: string) => api.delete(`/org/departments/${id}/`),
-  roles:           () => api.get('/org/roles/'),
-  createRole:      (d: any) => api.post('/org/roles/', d),
-  members:         (dept?: string) => api.get('/org/members/', { params: dept ? { department: dept } : {} }),
-  assignMember:    (d: any) => api.post('/org/members/assign/', d),
-  myPermissions:   () => api.get('/org/my-permissions/'),
+/* ── types (what the /org endpoints return) ─────────────────── */
+type Dept = { id: string; name: string; description?: string; color: string; parent?: string | null }
+type Role = { id: string; name: string; level: number; department?: string | null; department_name?: string | null }
+type Member = {
+  id: string; user_name: string; user_email: string
+  department?: string | null; department_name?: string | null
+  role?: string | null; role_name?: string | null; role_level?: number | null
+}
+type TreeNode = {
+  id: string; name: string; color: string; member_count: number
+  roles: { id: string; name: string; level: number }[]
+  members: { id: string; name: string; email: string; role: string | null }[]
+  children: TreeNode[]
+}
+type MyAccess = {
+  department: { id: string; name: string } | null
+  role: { id: string; name: string; level: number } | null
+  accessible_doc_count: number
 }
 
-const LEVEL_LABELS: Record<number, string> = {
-  1: 'Executive', 2: 'Director', 3: 'Senior Manager',
-  4: 'Manager',   5: 'Senior',   6: 'Mid-Level',
-  7: 'Junior',    8: 'Intern',   9: 'Trainee', 10: 'Observer'
+const LEVELS: Record<number, string> = {
+  1: 'Executive', 2: 'Director', 3: 'Senior manager', 4: 'Manager', 5: 'Senior',
+  6: 'Mid-level', 7: 'Junior', 8: 'Intern', 9: 'Trainee', 10: 'Observer',
 }
 
-const VISIBILITY_ICONS: Record<string, any> = {
-  private:      { icon: Lock,    label: 'Private',      variant: 'gray' },
-  user_share:   { icon: Share2,  label: 'User Share',   variant: 'blue' },
-  department:   { icon: Building2,label: 'Department',  variant: 'amber' },
-  organization: { icon: Globe,   label: 'Organization', variant: 'green' },
-  custom:       { icon: Layers,  label: 'Custom',       variant: 'red' },
+const SWATCHES = ['#1A3DAF', '#15803D', '#B45309', '#B91C1C', '#7E22CE', '#0E7490', '#5A5750']
+
+const VISIBILITY = [
+  { icon: Lock,      name: 'Private',      desc: 'Only the person who uploaded it.' },
+  { icon: Share2,    name: 'Shared',       desc: 'Specific people, picked by name.' },
+  { icon: Building2, name: 'Department',   desc: 'The department and anyone senior to it.' },
+  { icon: Globe,     name: 'Organisation', desc: 'Everyone with an account.' },
+  { icon: Layers,    name: 'Custom',       desc: 'A mix of people, departments and roles.' },
+]
+
+type Tab = 'teams' | 'people' | 'roles'
+
+const list = <T,>(d: any): T[] => (Array.isArray(d) ? d : d?.results ?? [])
+const apiError = (e: any, fallback: string) => {
+  const d = e?.response?.data
+  if (!d) return fallback
+  if (typeof d === 'string') return d
+  if (d.detail || d.error) return d.detail || d.error
+  const first = Object.values(d)[0]
+  return Array.isArray(first) ? String(first[0]) : fallback
 }
 
-// ── Main Component ────────────────────────────────────────────
 export default function OrganizationPage() {
-  const [tab, setTab] = useState<'tree'|'departments'|'roles'|'members'>('tree')
-  const [tree, setTree] = useState<any[]>([])
-  const [departments, setDepts] = useState<any[]>([])
-  const [roles, setRoles] = useState<any[]>([])
-  const [members, setMembers] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [myPerms, setMyPerms] = useState<any>(null)
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
 
-  // Modals
-  const [showAddDept, setShowAddDept] = useState(false)
-  const [showAddRole, setShowAddRole] = useState(false)
-  const [newDept, setNewDept] = useState({ name: '', description: '', color: '#1A3DAF' })
-  const [newRole, setNewRole] = useState({ name: '', level: 5, department: '' })
+  const [tab, setTab] = useState<Tab>('teams')
+  const [loading, setLoading] = useState(true)
+  const [tree, setTree] = useState<TreeNode[]>([])
+  const [depts, setDepts] = useState<Dept[]>([])
+  const [roles, setRoles] = useState<Role[]>([])
+  const [members, setMembers] = useState<Member[]>([])
+  const [me, setMe] = useState<MyAccess | null>(null)
+
+  const [deptModal, setDeptModal] = useState(false)
+  const [roleModal, setRoleModal] = useState(false)
+  const [editing, setEditing] = useState<Member | null>(null)
 
   const load = async () => {
-    setLoading(true)
-    try {
-      const [treeR, deptsR, rolesR, membersR, permsR] = await Promise.all([
-        orgApi.tree(),
-        orgApi.departments(),
-        orgApi.roles(),
-        orgApi.members(),
-        orgApi.myPermissions(),
-      ])
-      setTree(treeR.data.tree || [])
-      setDepts(deptsR.data.results || deptsR.data || [])
-      setRoles(rolesR.data.results || rolesR.data || [])
-      setMembers(membersR.data.results || membersR.data || [])
-      setMyPerms(permsR.data)
-    } catch (e) {
-      toast.error('Failed to load organization data.')
-    } finally {
-      setLoading(false)
-    }
+    const results = await Promise.allSettled([
+      orgApi.tree(), orgApi.departments(), orgApi.roles(), orgApi.members(), orgApi.myPermissions(),
+    ])
+    const [t, d, r, m, p] = results
+    if (t.status === 'fulfilled') setTree(t.value.data.tree || [])
+    if (d.status === 'fulfilled') setDepts(list<Dept>(d.value.data))
+    if (r.status === 'fulfilled') setRoles(list<Role>(r.value.data).sort((a, b) => a.level - b.level))
+    if (m.status === 'fulfilled') setMembers(list<Member>(m.value.data))
+    if (p.status === 'fulfilled') setMe(p.value.data)
+    if (results.every(x => x.status === 'rejected')) toast.error('Couldn’t load your organisation. Try refreshing.')
+    setLoading(false)
   }
-
   useEffect(() => { load() }, [])
 
-  const createDept = async () => {
-    if (!newDept.name) return
-    await orgApi.createDept(newDept)
-    toast.success('Department created!')
-    setNewDept({ name: '', description: '', color: '#1A3DAF' })
-    setShowAddDept(false)
-    load()
+  const removeDept = async (d: { id: string; name: string }) => {
+    if (!window.confirm(`Delete the “${d.name}” department? People in it will be left without a department.`)) return
+    try {
+      await orgApi.deleteDept(d.id)
+      toast.success(`Deleted ${d.name}`)
+      load()
+    } catch (e) { toast.error(apiError(e, 'Couldn’t delete that department.')) }
   }
 
-  const createRole = async () => {
-    if (!newRole.name) return
-    await orgApi.createRole(newRole)
-    toast.success('Role created!')
-    setNewRole({ name: '', level: 5, department: '' })
-    setShowAddRole(false)
-    load()
-  }
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: 'teams',  label: 'Departments', count: depts.length },
+    { key: 'people', label: 'People',      count: members.length },
+    { key: 'roles',  label: 'Roles',       count: roles.length },
+  ]
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#EBF0FF] rounded-[11px] flex items-center justify-center">
-            <Building2 className="w-5 h-5 text-[#1A3DAF]" />
-          </div>
-          <div>
-            <h2 className="font-display text-2xl font-bold text-[#0E0D0A]">Organization</h2>
-            <p className="text-sm text-[#9B9890]">Hierarchy · Roles · Permissions · Access Control</p>
-          </div>
-        </div>
-        {myPerms && (
-          <div className="flex items-center gap-2 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[11px] px-4 py-2.5">
-            <UserCheck className="w-4 h-4 text-[#9B9890]" />
-            <div className="text-xs">
-              <span className="text-[#9B9890]">You · </span>
-              <span className="font-medium text-[#0E0D0A]">{myPerms.department?.name || 'No Department'}</span>
-              {myPerms.role && <span className="text-[#9B9890]"> / {myPerms.role.name} (L{myPerms.role.level})</span>}
-            </div>
-            <div className="ml-4 font-mono text-[11px] text-[#1A3DAF] bg-[#EBF0FF] px-2 py-0.5 rounded-full">
-              {myPerms.accessible_doc_count} docs accessible
-            </div>
-          </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="People & teams"
+        description="How your organisation is structured. Departments and roles decide which documents each person can open."
+        actions={isAdmin && (
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setRoleModal(true)}><Plus className="h-3.5 w-3.5" /> Role</Button>
+            <Button size="sm" onClick={() => setDeptModal(true)}><Plus className="h-3.5 w-3.5" /> Department</Button>
+          </>
         )}
-      </div>
+      />
 
-      {/* Tab Bar */}
-      <div className="flex gap-1 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[11px] p-1">
-        {[
-          ['tree', 'Org Chart', Network],
-          ['departments', 'Departments', Building2],
-          ['roles', 'Roles', Shield],
-          ['members', 'Members', Users],
-        ].map(([k, l, Icon]: any) => (
-          <button key={k} onClick={() => setTab(k)}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-[8px] text-xs font-medium transition-all
-              ${tab === k ? 'bg-white text-[#0E0D0A] shadow-sm' : 'text-[#9B9890] hover:text-[#5A5750]'}`}>
-            <Icon className="w-3.5 h-3.5" />{l}
+      <MyAccessStrip me={me} loading={loading} />
+
+      {/* tabs */}
+      <div className="flex gap-6 border-b border-[#DDD9D0]" role="tablist">
+        {tabs.map(t => (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            onClick={() => setTab(t.key)}
+            className={cn(
+              '-mb-px flex items-center gap-2 border-b-2 pb-2.5 text-[14px] transition-colors',
+              tab === t.key ? 'border-[#0E0D0A] font-medium text-[#0E0D0A]' : 'border-transparent text-[#8A877F] hover:text-[#2B2924]'
+            )}
+          >
+            {t.label}
+            {!loading && <span className="text-[12.5px] tabular-nums text-[#8A877F]">{t.count}</span>}
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="h-48 bg-white border border-[#DDD9D0] rounded-[14px] animate-pulse" />
+        <Card><div className="space-y-3 p-5">{[0, 1, 2].map(i => <div key={i} className="h-9 animate-pulse rounded-[6px] bg-[#F1EFEA]" />)}</div></Card>
       ) : (
         <>
-          {/* ── Org Chart Tab ── */}
-          {tab === 'tree' && (
-            <Card>
-              <CardHeader title="Organization Chart" />
-              <CardBody>
-                {tree.length === 0 ? (
-                  <p className="text-center text-sm text-[#9B9890] py-10">
-                    No departments yet. Create departments and assign members to build your org chart.
-                  </p>
-                ) : (
-                  <div className="space-y-4">
-                    {tree.map(dept => <OrgNode key={dept.id} node={dept} depth={0} />)}
-                  </div>
-                )}
-              </CardBody>
-            </Card>
+          {tab === 'teams' && (
+            <TeamsTab tree={tree} depts={depts} isAdmin={isAdmin} onAdd={() => setDeptModal(true)} onDelete={removeDept} />
           )}
-
-          {/* ── Departments Tab ── */}
-          {tab === 'departments' && (
-            <Card>
-              <CardHeader title="Departments" action={
-                <Button size="sm" onClick={() => setShowAddDept(true)}>
-                  <Plus className="w-3.5 h-3.5" /> Add Department
-                </Button>
-              } />
-              {showAddDept && (
-                <div className="px-5 pt-4 pb-2 border-b border-[#ECEAE4] bg-[#F7F9FF]">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                    <input value={newDept.name} onChange={e => setNewDept(p => ({...p, name: e.target.value}))}
-                      placeholder="Department name" className="px-3 py-2 border border-[#DDD9D0] rounded-[8px] text-sm" />
-                    <input value={newDept.description} onChange={e => setNewDept(p => ({...p, description: e.target.value}))}
-                      placeholder="Description (optional)" className="px-3 py-2 border border-[#DDD9D0] rounded-[8px] text-sm" />
-                    <div className="flex gap-2">
-                      <input type="color" value={newDept.color} onChange={e => setNewDept(p => ({...p, color: e.target.value}))}
-                        className="w-10 h-10 rounded border border-[#DDD9D0] cursor-pointer" />
-                      <Button onClick={createDept} className="flex-1">Create</Button>
-                      <Button variant="ghost" onClick={() => setShowAddDept(false)}>Cancel</Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-              <div className="divide-y divide-[#ECEAE4]">
-                {departments.map(d => (
-                  <div key={d.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#F7F5F0]">
-                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: d.color }} />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-[#0E0D0A]">{d.name}</p>
-                      {d.description && <p className="text-xs text-[#9B9890]">{d.description}</p>}
-                    </div>
-                  </div>
-                ))}
-                {departments.length === 0 && (
-                  <div className="p-10 text-center text-sm text-[#9B9890]">No departments created yet.</div>
-                )}
-              </div>
-            </Card>
+          {tab === 'people' && (
+            <PeopleTab members={members} depts={depts} isAdmin={isAdmin} onEdit={setEditing} />
           )}
-
-          {/* ── Roles Tab ── */}
           {tab === 'roles' && (
-            <Card>
-              <CardHeader title="Roles" action={
-                <Button size="sm" onClick={() => setShowAddRole(true)}>
-                  <Plus className="w-3.5 h-3.5" /> Add Role
-                </Button>
-              } />
-              {showAddRole && (
-                <div className="px-5 pt-4 pb-2 border-b border-[#ECEAE4] bg-[#F7F9FF]">
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
-                    <input value={newRole.name} onChange={e => setNewRole(p => ({...p, name: e.target.value}))}
-                      placeholder="Role name (e.g. Finance Manager)" className="px-3 py-2 border border-[#DDD9D0] rounded-[8px] text-sm" />
-                    <select value={newRole.level} onChange={e => setNewRole(p => ({...p, level: Number(e.target.value)}))}
-                      className="px-3 py-2 border border-[#DDD9D0] rounded-[8px] text-sm">
-                      {Object.entries(LEVEL_LABELS).map(([l, name]) => (
-                        <option key={l} value={l}>L{l} — {name}</option>
-                      ))}
-                    </select>
-                    <select value={newRole.department} onChange={e => setNewRole(p => ({...p, department: e.target.value}))}
-                      className="px-3 py-2 border border-[#DDD9D0] rounded-[8px] text-sm">
-                      <option value="">No Department</option>
-                      {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                    </select>
-                    <div className="flex gap-2">
-                      <Button onClick={createRole} className="flex-1">Create</Button>
-                      <Button variant="ghost" onClick={() => setShowAddRole(false)}>Cancel</Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-              <div className="divide-y divide-[#ECEAE4]">
-                {roles.map(r => (
-                  <div key={r.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#F7F5F0]">
-                    <div className={`font-mono text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      r.level <= 2 ? 'bg-red-50 text-red-600' :
-                      r.level <= 4 ? 'bg-amber-50 text-amber-700' :
-                      'bg-[#F7F5F0] text-[#9B9890]'
-                    }`}>L{r.level}</div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-[#0E0D0A]">{r.name}</p>
-                      <p className="text-xs text-[#9B9890]">{r.department_name || 'Cross-department'} · {LEVEL_LABELS[r.level]}</p>
-                    </div>
-                  </div>
-                ))}
-                {roles.length === 0 && (
-                  <div className="p-10 text-center text-sm text-[#9B9890]">No roles created yet.</div>
-                )}
-              </div>
-            </Card>
-          )}
-
-          {/* ── Members Tab ── */}
-          {tab === 'members' && (
-            <Card>
-              <CardHeader title="Members" action={
-                <span className="font-mono text-[11px] text-[#9B9890]">{members.length} members</span>
-              } />
-              <div className="divide-y divide-[#ECEAE4]">
-                {members.map(m => (
-                  <div key={m.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#F7F5F0]">
-                    <div className="w-8 h-8 bg-[#EBF0FF] rounded-full flex items-center justify-center font-display text-xs font-bold text-[#1A3DAF] flex-shrink-0">
-                      {(m.user_name || m.user_email || '?')[0].toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-[#0E0D0A] truncate">{m.user_name}</p>
-                      <p className="font-mono text-[11px] text-[#9B9890] truncate">{m.user_email}</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-xs font-medium text-[#0E0D0A]">{m.role_name || '—'}</p>
-                      <p className="text-[11px] text-[#9B9890]">{m.department_name || 'No Department'} {m.role_level ? `· L${m.role_level}` : ''}</p>
-                    </div>
-                  </div>
-                ))}
-                {members.length === 0 && (
-                  <div className="p-10 text-center text-sm text-[#9B9890]">
-                    No members assigned yet. Use the admin panel to assign users.
-                  </div>
-                )}
-              </div>
-            </Card>
+            <RolesTab roles={roles} isAdmin={isAdmin} onAdd={() => setRoleModal(true)} />
           )}
         </>
       )}
 
-      {/* Visibility Guide */}
-      <Card>
-        <CardHeader title="Document Visibility Levels" />
-        <CardBody>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-            {Object.entries(VISIBILITY_ICONS).map(([key, v]: any) => {
-              const Icon = v.icon
-              return (
-                <div key={key} className="text-center p-4 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[12px]">
-                  <div className="w-9 h-9 bg-white border border-[#DDD9D0] rounded-[10px] flex items-center justify-center mx-auto mb-2">
-                    <Icon className="w-4 h-4 text-[#0E0D0A]" />
-                  </div>
-                  <p className="font-semibold text-xs text-[#0E0D0A] mb-1">{v.label}</p>
-                  <p className="text-[11px] text-[#9B9890] leading-relaxed">
-                    {key === 'private'      && 'Only the uploader can access.'}
-                    {key === 'user_share'   && 'Specific named users.'}
-                    {key === 'department'   && 'Everyone in the department + hierarchy above.'}
-                    {key === 'organization' && 'All registered users.'}
-                    {key === 'custom'       && 'Custom mix of users, departments, and roles.'}
-                  </p>
-                </div>
-              )
-            })}
-          </div>
-        </CardBody>
-      </Card>
+      <VisibilityGuide />
+
+      {isAdmin && (
+        <>
+          <DeptModal open={deptModal} onOpenChange={setDeptModal} depts={depts} onSaved={load} />
+          <RoleModal open={roleModal} onOpenChange={setRoleModal} depts={depts} onSaved={load} />
+          <MemberModal member={editing} onClose={() => setEditing(null)} depts={depts} roles={roles} onSaved={load} />
+        </>
+      )}
     </div>
   )
 }
 
-// ── Org Node (recursive) ─────────────────────────────────────
-function OrgNode({ node, depth }: { node: any, depth: number }) {
-  const [expanded, setExpanded] = useState(depth < 1)
+/* ── “you” strip ─────────────────────────────────────────────── */
+function MyAccessStrip({ me, loading }: { me: MyAccess | null; loading: boolean }) {
+  if (loading) return <div className="h-[58px] animate-pulse rounded-[12px] bg-[#ECEAE4]/60" />
+  if (!me) return null
+  return (
+    <div className="flex flex-wrap items-center gap-x-8 gap-y-2 rounded-[12px] border border-[#DDD9D0] bg-white px-5 py-3.5 text-[14px]">
+      <div>
+        <span className="text-[#8A877F]">Your department </span>
+        <span className="font-medium">{me.department?.name || 'Not assigned'}</span>
+      </div>
+      <div>
+        <span className="text-[#8A877F]">Your role </span>
+        <span className="font-medium">{me.role ? `${me.role.name} · ${LEVELS[me.role.level] ?? `Level ${me.role.level}`}` : 'Not assigned'}</span>
+      </div>
+      <div className="sm:ml-auto">
+        <span className="font-medium tabular-nums">{me.accessible_doc_count.toLocaleString()}</span>
+        <span className="text-[#8A877F]"> documents you can open</span>
+      </div>
+    </div>
+  )
+}
+
+/* ── Departments ─────────────────────────────────────────────── */
+function TeamsTab({ tree, depts, isAdmin, onAdd, onDelete }: {
+  tree: TreeNode[]; depts: Dept[]; isAdmin: boolean; onAdd: () => void; onDelete: (d: { id: string; name: string }) => void
+}) {
+  if (!tree.length && !depts.length) {
+    return (
+      <Card>
+        <EmptyState icon={<Building2 />} title="No departments yet"
+          action={isAdmin && <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add the first one</Button>}>
+          {isAdmin
+            ? 'Start with how your firm is split today — for example Tax, Audit and Admin. You can nest teams later.'
+            : 'An administrator hasn’t set up departments yet.'}
+        </EmptyState>
+      </Card>
+    )
+  }
+  return (
+    <Card>
+      <ul>{tree.map(n => <DeptRow key={n.id} node={n} depth={0} isAdmin={isAdmin} onDelete={onDelete} />)}</ul>
+    </Card>
+  )
+}
+
+function DeptRow({ node, depth, isAdmin, onDelete }: {
+  node: TreeNode; depth: number; isAdmin: boolean; onDelete: (d: { id: string; name: string }) => void
+}) {
+  const [open, setOpen] = useState(depth === 0 && node.members.length > 0 && node.members.length <= 6)
+  const hasContent = node.members.length > 0 || node.children.length > 0
+  const pad = 20 + depth * 24
 
   return (
-    <div className={`${depth > 0 ? 'ml-6 pl-4 border-l-2 border-[#ECEAE4]' : ''}`}>
-      <div
-        className="flex items-center gap-2 py-2 cursor-pointer group"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: node.color }} />
-        <span className="font-semibold text-sm text-[#0E0D0A] group-hover:text-[#1A3DAF] transition-colors">
-          {node.name}
-        </span>
-        <span className="font-mono text-[10px] text-[#9B9890]">{node.member_count} members</span>
-        {(node.children?.length > 0 || node.members?.length > 0) && (
-          <ChevronRight className={`w-3 h-3 text-[#9B9890] transition-transform ${expanded ? 'rotate-90' : ''}`} />
+    <li className="border-b border-[#F1EFEA] last:border-0">
+      <div className="group flex items-center gap-3 py-3 pr-4 hover:bg-[#FBFAF7]" style={{ paddingLeft: pad }}>
+        <button
+          onClick={() => setOpen(o => !o)}
+          disabled={!hasContent}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-default"
+        >
+          <ChevronRight className={cn('h-4 w-4 shrink-0 text-[#8A877F] transition-transform', open && 'rotate-90', !hasContent && 'invisible')} />
+          <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: node.color }} />
+          <span className="truncate text-[14px] font-medium">{node.name}</span>
+          <span className="shrink-0 text-[13px] text-[#8A877F]">
+            {node.member_count} {node.member_count === 1 ? 'person' : 'people'}
+            {node.children.length > 0 && ` · ${node.children.length} sub-team${node.children.length > 1 ? 's' : ''}`}
+          </span>
+        </button>
+        <div className="hidden max-w-[40%] flex-wrap justify-end gap-1 md:flex">
+          {node.roles.slice(0, 3).map(r => (
+            <span key={r.id} className="rounded-[5px] bg-[#F1EFEA] px-1.5 py-0.5 text-[11.5px] text-[#5A5750]">{r.name}</span>
+          ))}
+          {node.roles.length > 3 && <span className="px-1 text-[11.5px] text-[#8A877F]">+{node.roles.length - 3}</span>}
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => onDelete(node)}
+            className="rounded-[6px] p-1.5 text-[#8A877F] opacity-0 transition-opacity hover:bg-[#FCEFEF] hover:text-[#B91C1C] focus:opacity-100 group-hover:opacity-100"
+            aria-label={`Delete ${node.name}`}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
 
-      {expanded && (
-        <div className="ml-4">
-          {/* Roles */}
-          {node.roles?.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2">
-              {node.roles.map((r: any) => (
-                <span key={r.id} className="font-mono text-[10px] text-[#9B9890] bg-[#F7F5F0] border border-[#ECEAE4] px-2 py-0.5 rounded-full">
-                  L{r.level} · {r.name}
-                </span>
+      {open && (
+        <>
+          {node.members.length > 0 && (
+            <ul className="pb-2" style={{ paddingLeft: pad + 28 }}>
+              {node.members.map(m => (
+                <li key={m.id} className="flex items-center gap-2.5 py-1.5 pr-4">
+                  <Avatar name={m.name || m.email} size="sm" />
+                  <span className="truncate text-[13.5px]">{m.name || m.email}</span>
+                  {m.role && <span className="truncate text-[13px] text-[#8A877F]">{m.role}</span>}
+                </li>
               ))}
-            </div>
+            </ul>
           )}
-          {/* Members */}
-          {node.members?.map((m: any) => (
-            <div key={m.id} className="flex items-center gap-2 py-1.5">
-              <div className="w-5 h-5 bg-[#EBF0FF] rounded-full flex items-center justify-center text-[9px] font-bold text-[#1A3DAF] flex-shrink-0">
-                {m.name[0]?.toUpperCase() || '?'}
-              </div>
-              <span className="text-xs text-[#5A5750]">{m.name}</span>
-              {m.role && <span className="font-mono text-[10px] text-[#9B9890]">· {m.role}</span>}
-            </div>
-          ))}
-          {/* Children (recursive) */}
-          {node.children?.map((c: any) => <OrgNode key={c.id} node={c} depth={depth + 1} />)}
-        </div>
+          {node.children.length > 0 && (
+            <ul className="border-t border-[#F1EFEA]">
+              {node.children.map(c => <DeptRow key={c.id} node={c} depth={depth + 1} isAdmin={isAdmin} onDelete={onDelete} />)}
+            </ul>
+          )}
+        </>
       )}
+    </li>
+  )
+}
+
+/* ── People ──────────────────────────────────────────────────── */
+function PeopleTab({ members, depts, isAdmin, onEdit }: {
+  members: Member[]; depts: Dept[]; isAdmin: boolean; onEdit: (m: Member) => void
+}) {
+  const [q, setQ] = useState('')
+  const [dept, setDept] = useState('')
+
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    return members
+      .filter(m => !dept || (dept === '__none' ? !m.department : m.department === dept))
+      .filter(m => !needle || `${m.user_name} ${m.user_email} ${m.role_name ?? ''}`.toLowerCase().includes(needle))
+      .sort((a, b) => (a.role_level ?? 99) - (b.role_level ?? 99) || (a.user_name || '').localeCompare(b.user_name || ''))
+  }, [members, q, dept])
+
+  if (!members.length) {
+    return (
+      <Card>
+        <EmptyState icon={<Users />} title="Nobody has been added yet">
+          People appear here once they have an account and are placed in a department.
+        </EmptyState>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <div className="flex flex-wrap gap-2 border-b border-[#ECEAE4] p-3">
+        <label className="relative min-w-[200px] flex-1">
+          <span className="sr-only">Search people</span>
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A877F]" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by name, email or role" className="field h-9 pl-9" />
+        </label>
+        <select value={dept} onChange={e => setDept(e.target.value)} className="field h-9 w-auto pr-8" aria-label="Filter by department">
+          <option value="">All departments</option>
+          {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          <option value="__none">No department</option>
+        </select>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-left text-[14px]">
+          <thead>
+            <tr className="text-[12.5px] text-[#8A877F]">
+              <th className="px-5 py-2.5 font-normal">Name</th>
+              <th className="px-3 py-2.5 font-normal">Department</th>
+              <th className="px-3 py-2.5 font-normal">Role</th>
+              {isAdmin && <th className="w-12 px-3 py-2.5"><span className="sr-only">Actions</span></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(m => (
+              <tr key={m.id} className="group border-t border-[#F1EFEA] hover:bg-[#FBFAF7]">
+                <td className="px-5 py-2.5">
+                  <div className="flex items-center gap-3">
+                    <Avatar name={m.user_name || m.user_email} />
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{m.user_name || '—'}</div>
+                      <div className="truncate text-[12.5px] text-[#8A877F]">{m.user_email}</div>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-3 py-2.5 text-[#2B2924]">{m.department_name || <span className="text-[#8A877F]">—</span>}</td>
+                <td className="px-3 py-2.5">
+                  {m.role_name
+                    ? <>{m.role_name}<span className="text-[#8A877F]"> · {LEVELS[m.role_level ?? 0] ?? `L${m.role_level}`}</span></>
+                    : <span className="text-[#8A877F]">—</span>}
+                </td>
+                {isAdmin && (
+                  <td className="px-3 py-2.5 text-right">
+                    <button onClick={() => onEdit(m)} aria-label={`Edit ${m.user_name}`}
+                      className="rounded-[6px] p-1.5 text-[#8A877F] opacity-0 hover:bg-[#ECEAE4] hover:text-[#0E0D0A] focus:opacity-100 group-hover:opacity-100">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!rows.length && <p className="border-t border-[#F1EFEA] px-5 py-8 text-center text-[13.5px] text-[#8A877F]">No one matches that search.</p>}
+      </div>
+    </Card>
+  )
+}
+
+/* ── Roles ───────────────────────────────────────────────────── */
+function RolesTab({ roles, isAdmin, onAdd }: { roles: Role[]; isAdmin: boolean; onAdd: () => void }) {
+  if (!roles.length) {
+    return (
+      <Card>
+        <EmptyState title="No roles yet"
+          action={isAdmin && <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add a role</Button>}>
+          Roles carry a seniority level. Someone at a higher level can see documents shared with the teams below them.
+        </EmptyState>
+      </Card>
+    )
+  }
+  return (
+    <Card>
+      <ul>
+        {roles.map(r => (
+          <li key={r.id} className="flex items-center gap-4 border-b border-[#F1EFEA] px-5 py-3 last:border-0">
+            <LevelMeter level={r.level} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[14px] font-medium">{r.name}</div>
+              <div className="text-[12.5px] text-[#8A877F]">{r.department_name || 'Any department'}</div>
+            </div>
+            <span className="shrink-0 text-[13px] text-[#5A5750]">{LEVELS[r.level] ?? `Level ${r.level}`}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
+/** Ten little bars; more filled = more senior. Easier to scan than "L3". */
+function LevelMeter({ level }: { level: number }) {
+  const filled = 11 - level
+  return (
+    <span className="flex h-4 shrink-0 items-end gap-[2px]" title={`Level ${level}`} aria-label={`Level ${level} of 10`}>
+      {Array.from({ length: 10 }, (_, i) => (
+        <span key={i} className={cn('w-[3px] rounded-[1px]', i < filled ? 'bg-[#1A3DAF]' : 'bg-[#E2DED5]')} style={{ height: 6 + i }} />
+      ))}
+    </span>
+  )
+}
+
+/* ── visibility explainer ────────────────────────────────────── */
+function VisibilityGuide() {
+  return (
+    <section className="pt-2">
+      <h2 className="text-[15px] font-semibold">Who can see a document</h2>
+      <p className="mt-1 text-[13.5px] text-[#5A5750]">Every document has one of these settings. It can be changed from the document’s page.</p>
+      <div className="mt-4 grid gap-px overflow-hidden rounded-[12px] border border-[#DDD9D0] bg-[#DDD9D0] sm:grid-cols-2 lg:grid-cols-5">
+        {VISIBILITY.map(v => (
+          <div key={v.name} className="bg-white p-4">
+            <v.icon className="h-4 w-4 text-[#5A5750]" strokeWidth={1.75} />
+            <div className="mt-2.5 text-[14px] font-medium">{v.name}</div>
+            <p className="mt-0.5 text-[13px] leading-snug text-[#8A877F]">{v.desc}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+/* ── modals ──────────────────────────────────────────────────── */
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[13px] font-medium text-[#2B2924]">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+function DeptModal({ open, onOpenChange, depts, onSaved }: {
+  open: boolean; onOpenChange: (o: boolean) => void; depts: Dept[]; onSaved: () => void
+}) {
+  const blank = { name: '', description: '', color: SWATCHES[0], parent: '' }
+  const [form, setForm] = useState(blank)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { if (open) setForm(blank) }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.name.trim()) return
+    setSaving(true)
+    try {
+      await orgApi.createDept({ ...form, name: form.name.trim(), parent: form.parent || null })
+      toast.success(`Added ${form.name.trim()}`)
+      onOpenChange(false)
+      onSaved()
+    } catch (err) { toast.error(apiError(err, 'Couldn’t create the department.')) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open={open} onOpenChange={onOpenChange} title="New department">
+      <form id="dept-form" onSubmit={save} className="space-y-4">
+        <Field label="Name">
+          <input autoFocus value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Tax" className="field" />
+        </Field>
+        <Field label="Part of">
+          <select value={form.parent} onChange={e => setForm(f => ({ ...f, parent: e.target.value }))} className="field">
+            <option value="">Nothing — it’s a top-level department</option>
+            {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Description (optional)">
+          <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="What this team handles" className="field" />
+        </Field>
+        <div>
+          <span className="mb-1.5 block text-[13px] font-medium text-[#2B2924]">Colour</span>
+          <div className="flex gap-2">
+            {SWATCHES.map(c => (
+              <button key={c} type="button" onClick={() => setForm(f => ({ ...f, color: c }))} aria-label={`Colour ${c}`}
+                className={cn('h-7 w-7 rounded-full ring-offset-2 transition', form.color === c && 'ring-2 ring-[#0E0D0A]')} style={{ background: c }} />
+            ))}
+          </div>
+        </div>
+      </form>
+      <ModalFooter formId="dept-form" saving={saving} disabled={!form.name.trim()} onCancel={() => onOpenChange(false)} label="Create department" />
+    </Modal>
+  )
+}
+
+function RoleModal({ open, onOpenChange, depts, onSaved }: {
+  open: boolean; onOpenChange: (o: boolean) => void; depts: Dept[]; onSaved: () => void
+}) {
+  const blank = { name: '', level: 5, department: '' }
+  const [form, setForm] = useState(blank)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { if (open) setForm(blank) }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.name.trim()) return
+    setSaving(true)
+    try {
+      await orgApi.createRole({ ...form, name: form.name.trim(), department: form.department || null })
+      toast.success(`Added ${form.name.trim()}`)
+      onOpenChange(false)
+      onSaved()
+    } catch (err) { toast.error(apiError(err, 'Couldn’t create the role.')) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open={open} onOpenChange={onOpenChange} title="New role" description="Seniority decides how far up the tree a person can see.">
+      <form id="role-form" onSubmit={save} className="space-y-4">
+        <Field label="Role name">
+          <input autoFocus value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Audit manager" className="field" />
+        </Field>
+        <Field label="Seniority">
+          <select value={form.level} onChange={e => setForm(f => ({ ...f, level: Number(e.target.value) }))} className="field">
+            {Object.entries(LEVELS).map(([l, n]) => <option key={l} value={l}>{n} (level {l})</option>)}
+          </select>
+        </Field>
+        <Field label="Department">
+          <select value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} className="field">
+            <option value="">Any department</option>
+            {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+      </form>
+      <ModalFooter formId="role-form" saving={saving} disabled={!form.name.trim()} onCancel={() => onOpenChange(false)} label="Create role" />
+    </Modal>
+  )
+}
+
+function MemberModal({ member, onClose, depts, roles, onSaved }: {
+  member: Member | null; onClose: () => void; depts: Dept[]; roles: Role[]; onSaved: () => void
+}) {
+  const [dept, setDept] = useState('')
+  const [role, setRole] = useState('')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    if (member) { setDept(member.department || ''); setRole(member.role || '') }
+  }, [member])
+
+  // Only offer roles that belong to the chosen department, or to none.
+  const roleOptions = roles.filter(r => !r.department || r.department === dept)
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!member) return
+    setSaving(true)
+    try {
+      await orgApi.updateMember(member.id, { department: dept || null, role: role || null })
+      toast.success(`Updated ${member.user_name || member.user_email}`)
+      onClose()
+      onSaved()
+    } catch (err) { toast.error(apiError(err, 'Couldn’t save those changes.')) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <Modal open={!!member} onOpenChange={o => !o && onClose()} title={member?.user_name || 'Edit person'} description={member?.user_email}>
+      <form id="member-form" onSubmit={save} className="space-y-4">
+        <Field label="Department">
+          <select value={dept} onChange={e => { setDept(e.target.value); setRole('') }} className="field">
+            <option value="">No department</option>
+            {depts.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Role">
+          <select value={role} onChange={e => setRole(e.target.value)} className="field">
+            <option value="">No role</option>
+            {roleOptions.map(r => <option key={r.id} value={r.id}>{r.name} — {LEVELS[r.level]}</option>)}
+          </select>
+        </Field>
+      </form>
+      <ModalFooter formId="member-form" saving={saving} onCancel={onClose} label="Save" />
+    </Modal>
+  )
+}
+
+function ModalFooter({ formId, saving, disabled, onCancel, label }: {
+  formId: string; saving: boolean; disabled?: boolean; onCancel: () => void; label: string
+}) {
+  return (
+    <div className="-mx-5 mt-5 flex justify-end gap-2 border-t border-[#ECEAE4] px-5 pt-3">
+      <Button type="button" variant="plain" size="sm" onClick={onCancel}>Cancel</Button>
+      <Button type="submit" form={formId} size="sm" loading={saving} disabled={disabled}>{label}</Button>
     </div>
+  )
+}
+
+function Avatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' }) {
+  // A stable, muted colour per person so a long list is easier to scan.
+  const palette = ['#E4E9F7', '#E6F2EA', '#F6EBDD', '#F3E6F4', '#E2F0F2', '#ECEAE4']
+  const fg = ['#1A3DAF', '#15803D', '#A35A04', '#7E22CE', '#0E7490', '#5A5750']
+  const i = [...(name || '?')].reduce((a, c) => a + c.charCodeAt(0), 0) % palette.length
+  return (
+    <span
+      className={cn('flex shrink-0 items-center justify-center rounded-full font-medium', size === 'sm' ? 'h-6 w-6 text-[10px]' : 'h-8 w-8 text-[12px]')}
+      style={{ background: palette[i], color: fg[i] }}
+    >
+      {getInitials(name || '?')}
+    </span>
   )
 }

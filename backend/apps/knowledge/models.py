@@ -31,6 +31,7 @@ class KnowledgeNode(models.Model):
 
     class Meta:
         db_table = "knowledge_nodes"
+        indexes = [models.Index(fields=['node_type', 'document_id']), models.Index(fields=['owner', 'node_type'])]
         unique_together = ("owner", "name", "node_type")
         ordering = ["node_type", "name"]
 

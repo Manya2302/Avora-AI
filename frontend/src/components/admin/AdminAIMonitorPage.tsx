@@ -7,6 +7,8 @@ import StatCard from '@/components/shared/StatCard'
 import Badge from '@/components/shared/Badge'
 import Button from '@/components/shared/Button'
 import toast from 'react-hot-toast'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
 
 export default function AdminAIMonitorPage() {
   const [data, setData]     = useState<any>(null)
@@ -38,180 +40,175 @@ export default function AdminAIMonitorPage() {
       const { data: r } = await adminAiApi.retriggerFailed()
       toast.success(r.message)
       load()
-    } catch { toast.error('Failed to retrigger.') }
+    } catch { toast.error('Couldn’t restart the failed jobs.') }
   }
 
   const tabs = [
     { key:'pipeline', label:'Pipeline',       icon: Zap },
-    { key:'ocr',      label:'OCR Engine',     icon: Brain },
+    { key:'ocr',      label:'Text extraction', icon: Brain },
     { key:'classify', label:'Classification', icon: BarChart3 },
-    { key:'search',   label:'Search Analytics',icon: BarChart3 },
+    { key:'search',   label:'Search',          icon: BarChart3 },
   ]
 
   const CATEGORY_LABELS: Record<string, string> = {
-    invoice:'Invoice', contract:'Contract', tax_filing:'Tax Filing',
-    medical_record:'Medical Record', bank_statement:'Bank Statement',
-    legal_agreement:'Legal Agreement', audit_report:'Audit Report',
-    certificate:'Certificate', purchase_order:'Purchase Order',
-    employee_record:'Employee Record', vendor_agreement:'Vendor Agreement',
-    compliance_report:'Compliance Report', other:'Other',
+    invoice:'Invoice', contract:'Contract', tax_filing:'Tax filing',
+    medical_record:'Medical record', bank_statement:'Bank statement',
+    legal_agreement:'Legal agreement', audit_report:'Audit report',
+    certificate:'Certificate', purchase_order:'Purchase order',
+    employee_record:'Employee record', vendor_agreement:'Vendor agreement',
+    compliance_report:'Compliance report', other:'Other',
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-[11px] bg-[#EBF0FF] flex items-center justify-center"><Brain className="w-5 h-5 text-[#1A3DAF]" /></div>
-          <div>
-            <h2 className="font-display text-2xl font-bold tracking-tight text-[#0E0D0A]">AI Health Dashboard</h2>
-            <p className="text-sm font-light text-[#9B9890]">Avora AI pipeline monitoring — Phase 2</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
+    <div className="space-y-6">
+      <PageHeader
+        title="AI health"
+        description="Document processing, text extraction, classification and search, as they run right now."
+        actions={<>
           {data?.pipeline?.failed > 0 && (
             <Button variant="red" size="sm" onClick={retriggerFailed}>
-              <RotateCcw className="w-3.5 h-3.5" /> Retrigger {data.pipeline.failed} Failed
+              <RotateCcw className="h-3.5 w-3.5" /> Retry {data.pipeline.failed} failed
             </Button>
           )}
-          <Button variant="ghost" size="sm" onClick={load}><RefreshCw className="w-3.5 h-3.5" /> Refresh</Button>
-        </div>
-      </div>
+          <Button variant="ghost" size="sm" onClick={load}><RefreshCw className="h-3.5 w-3.5" /> Refresh</Button>
+        </>}
+      />
 
       {loading ? (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {Array.from({length:4}).map((_,i) => <div key={i} className="h-28 bg-white border border-[#DDD9D0] rounded-[14px] animate-pulse" />)}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {Array.from({length:4}).map((_,i) => <div key={i} className="h-[104px] animate-pulse rounded-[12px] bg-[#F1EFEA]" />)}
         </div>
       ) : data && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-            <StatCard label="AI Processed"    value={data.pipeline?.completed?.toLocaleString() || 0}   icon={<CheckCircle2 />} accent="green" />
-            <StatCard label="Processing Now"  value={data.pipeline?.processing?.toLocaleString() || 0}  icon={<Clock />}        accent="blue"  />
-            <StatCard label="Failed Jobs"     value={data.pipeline?.failed?.toLocaleString() || 0}      icon={<AlertTriangle />} accent="red"  />
-            <StatCard label="Total Searches"  value={data.search?.total_searches?.toLocaleString() || 0} icon={<BarChart3 />}   accent="purple"/>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard label="Processed"        value={data.pipeline?.completed?.toLocaleString() || 0}   icon={<CheckCircle2 />} accent="green" />
+            <StatCard label="Processing now"   value={data.pipeline?.processing?.toLocaleString() || 0}  icon={<Clock />}        accent="blue"  />
+            <StatCard label="Failed"           value={data.pipeline?.failed?.toLocaleString() || 0}      icon={<AlertTriangle />} accent="red"  />
+            <StatCard label="Searches"         value={data.search?.total_searches?.toLocaleString() || 0} icon={<BarChart3 />}   accent="purple"/>
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[11px] p-1">
-            {tabs.map(t => (
-              <button key={t.key} onClick={() => setTab(t.key as any)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-[8px] text-xs font-medium flex-1 justify-center transition-all ${tab === t.key ? 'bg-white text-[#0E0D0A] shadow-sm' : 'text-[#9B9890] hover:text-[#5A5750]'}`}>
-                <t.icon className="w-3.5 h-3.5" />{t.label}
-              </button>
-            ))}
+          <div className="-mx-1 overflow-x-auto border-b border-[#DDD9D0]">
+            <div className="flex min-w-max gap-5 px-1" role="tablist">
+              {tabs.map(t => (
+                <button key={t.key} onClick={() => setTab(t.key as any)} role="tab" aria-selected={tab === t.key}
+                  className={`-mb-px flex items-center gap-2 border-b-2 pb-2.5 pt-1 text-[14px] transition-colors ${tab === t.key ? 'border-[#0E0D0A] font-medium text-[#0E0D0A]' : 'border-transparent text-[#8A877F] hover:text-[#2B2924]'}`}>
+                  <t.icon className="h-4 w-4" strokeWidth={1.75} />{t.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Pipeline tab */}
           {tab === 'pipeline' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader title="Pipeline Summary" />
-                <CardBody className="space-y-3">
+                <CardHeader title="Processing pipeline" />
+                <ul>
                   {[
-                    { label:'Total processed', value: data.pipeline?.completed, color:'text-green-600' },
-                    { label:'Currently queued', value: data.pipeline?.processing, color:'text-[#1A3DAF]' },
-                    { label:'Failed (retry available)', value: data.pipeline?.failed, color:'text-red-600' },
-                    { label:'Avg duration', value: `${Math.round(data.pipeline?.avg_duration_ms || 0).toLocaleString()} ms`, color:'text-[#0E0D0A]' },
+                    { label:'Processed', value: data.pipeline?.completed, color:'text-[#15803D]' },
+                    { label:'Waiting in queue', value: data.pipeline?.processing, color:'text-[#1A3DAF]' },
+                    { label:'Failed (can be retried)', value: data.pipeline?.failed, color:'text-[#B91C1C]' },
+                    { label:'Average time per document', value: `${Math.round(data.pipeline?.avg_duration_ms || 0).toLocaleString()} ms`, color:'text-[#0E0D0A]' },
                   ].map(s => (
-                    <div key={s.label} className="flex items-center justify-between p-3 bg-[#F7F5F0] rounded-[9px]">
-                      <span className="text-xs font-light text-[#5A5750]">{s.label}</span>
-                      <span className={`font-mono text-sm font-semibold ${s.color}`}>{s.value}</span>
-                    </div>
+                    <li key={s.label} className="flex items-center justify-between gap-4 border-t border-[#F1EFEA] px-5 py-3 first:border-0">
+                      <span className="text-[14px] text-[#2B2924]">{s.label}</span>
+                      <span className={`text-[14px] font-medium tabular-nums ${s.color}`}>{s.value}</span>
+                    </li>
                   ))}
-                </CardBody>
+                </ul>
               </Card>
               <Card>
-                <CardHeader title="Embedding Stats" />
-                <CardBody className="space-y-3">
+                <CardHeader title="Embeddings and text extraction" />
+                <ul>
                   {[
-                    { label:'Total vectors in Qdrant', value: data.embeddings?.total },
-                    { label:'OCR completed',           value: data.ocr?.completed },
-                    { label:'OCR failed',              value: data.ocr?.failed },
-                    { label:'Avg OCR confidence',      value: `${Math.round((data.ocr?.avg_confidence || 0) * 100)}%` },
+                    { label:'Vectors stored in Qdrant', value: data.embeddings?.total },
+                    { label:'Text extracted (OCR)',     value: data.ocr?.completed },
+                    { label:'Extraction failed',        value: data.ocr?.failed },
+                    { label:'Average OCR confidence',   value: `${Math.round((data.ocr?.avg_confidence || 0) * 100)}%` },
                   ].map(s => (
-                    <div key={s.label} className="flex items-center justify-between p-3 bg-[#F7F5F0] rounded-[9px]">
-                      <span className="text-xs font-light text-[#5A5750]">{s.label}</span>
-                      <span className="font-mono text-sm font-semibold text-[#0E0D0A]">{s.value ?? '—'}</span>
-                    </div>
+                    <li key={s.label} className="flex items-center justify-between gap-4 border-t border-[#F1EFEA] px-5 py-3 first:border-0">
+                      <span className="text-[14px] text-[#2B2924]">{s.label}</span>
+                      <span className="text-[14px] font-medium tabular-nums text-[#0E0D0A]">{s.value ?? '—'}</span>
+                    </li>
                   ))}
-                </CardBody>
+                </ul>
               </Card>
             </div>
           )}
 
           {/* Classification tab */}
           {tab === 'classify' && clsData && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader title="Documents by Category" />
-                <div className="p-4 space-y-2.5">
+                <CardHeader title="Documents by category" />
+                <div className="space-y-4 p-5">
                   {clsData.by_category?.map((c: any) => (
                     <div key={c.category}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs text-[#5A5750]">{CATEGORY_LABELS[c.category] || c.category}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-[10px] text-[#9B9890]">{Math.round((c.avg_conf||0)*100)}% conf</span>
-                          <span className="font-mono text-xs font-semibold text-[#0E0D0A]">{c.count}</span>
-                        </div>
+                      <div className="mb-1.5 flex items-center justify-between gap-3 text-[13px]">
+                        <span className="truncate text-[#2B2924]">{CATEGORY_LABELS[c.category] || c.category}</span>
+                        <span className="flex shrink-0 items-center gap-3 tabular-nums">
+                          <span className="text-[12.5px] text-[#8A877F]">{Math.round((c.avg_conf||0)*100)}% confidence</span>
+                          <span className="font-medium text-[#0E0D0A]">{c.count}</span>
+                        </span>
                       </div>
-                      <div className="h-1.5 bg-[#ECEAE4] rounded-full overflow-hidden">
-                        <div className="h-full bg-[#1A3DAF] rounded-full" style={{ width:`${Math.min((c.count / (clsData.by_category[0]?.count || 1)) * 100, 100)}%` }} />
+                      <div className="h-1.5 overflow-hidden rounded-full bg-[#F1EFEA]">
+                        <div className="h-full rounded-full bg-[#1A3DAF]" style={{ width:`${Math.min((c.count / (clsData.by_category[0]?.count || 1)) * 100, 100)}%` }} />
                       </div>
                     </div>
                   ))}
                 </div>
               </Card>
               <Card>
-                <CardHeader title="Confidentiality Distribution" />
-                <CardBody className="space-y-3">
+                <CardHeader title="Confidentiality" />
+                <ul>
                   {clsData.by_confidentiality?.map((c: any) => (
-                    <div key={c.confidentiality} className="flex items-center justify-between p-3 bg-[#F7F5F0] rounded-[9px]">
-                      <div className="flex items-center gap-2">
-                        <Badge variant={c.confidentiality === 'restricted' ? 'red' : c.confidentiality === 'confidential' ? 'amber' : c.confidentiality === 'internal' ? 'blue' : 'green'}>
-                          {c.confidentiality}
-                        </Badge>
-                      </div>
-                      <span className="font-mono text-sm font-semibold text-[#0E0D0A]">{c.count}</span>
-                    </div>
+                    <li key={c.confidentiality} className="flex items-center justify-between gap-4 border-t border-[#F1EFEA] px-5 py-3 first:border-0">
+                      <Badge className="capitalize" variant={c.confidentiality === 'restricted' ? 'red' : c.confidentiality === 'confidential' ? 'amber' : c.confidentiality === 'internal' ? 'blue' : 'green'}>
+                        {c.confidentiality}
+                      </Badge>
+                      <span className="text-[14px] font-medium tabular-nums text-[#0E0D0A]">{c.count}</span>
+                    </li>
                   ))}
-                  {clsData.high_risk > 0 && (
-                    <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-100 rounded-[9px]">
-                      <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
-                      <span className="text-xs text-red-700"><strong>{clsData.high_risk}</strong> documents with high risk score (&gt;70%)</span>
-                    </div>
-                  )}
-                </CardBody>
+                </ul>
+                {clsData.high_risk > 0 && (
+                  <div className="flex items-start gap-2.5 border-t border-[#ECEAE4] bg-[#FCEFEF] px-5 py-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#B91C1C]" strokeWidth={1.75} />
+                    <span className="text-[13px] text-[#B91C1C]"><strong className="font-semibold">{clsData.high_risk}</strong> documents have a risk score above 70%.</span>
+                  </div>
+                )}
               </Card>
             </div>
           )}
 
           {/* Search analytics tab */}
           {tab === 'search' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <Card>
-                <CardHeader title="Search Overview" />
-                <CardBody className="space-y-3">
+                <CardHeader title="Search volume" />
+                <ul>
                   {[
-                    { label:'Total searches',  value: data.search?.total_searches },
+                    { label:'Searches',        value: data.search?.total_searches },
                     { label:'Unique queries',  value: data.search?.unique_queries },
                   ].map(s => (
-                    <div key={s.label} className="flex justify-between p-3 bg-[#F7F5F0] rounded-[9px]">
-                      <span className="text-xs text-[#5A5750]">{s.label}</span>
-                      <span className="font-mono text-sm font-semibold text-[#0E0D0A]">{s.value ?? '—'}</span>
-                    </div>
+                    <li key={s.label} className="flex items-center justify-between gap-4 border-t border-[#F1EFEA] px-5 py-3 first:border-0">
+                      <span className="text-[14px] text-[#2B2924]">{s.label}</span>
+                      <span className="text-[14px] font-medium tabular-nums text-[#0E0D0A]">{s.value ?? '—'}</span>
+                    </li>
                   ))}
-                </CardBody>
+                </ul>
               </Card>
               <Card>
-                <CardHeader title="Top Search Queries" />
-                <div className="divide-y divide-[#ECEAE4]">
+                <CardHeader title="Most searched" />
+                <ol>
                   {(srchData || data.search?.popular || []).slice(0,8).map((p: any, i: number) => (
-                    <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                      <span className="font-mono text-[10px] text-[#9B9890] w-5">{i+1}</span>
-                      <span className="text-sm text-[#0E0D0A] flex-1 truncate">{p.query}</span>
-                      <span className="font-mono text-[10px] text-[#9B9890]">{p.search_count}×</span>
-                    </div>
+                    <li key={i} className="flex items-center gap-3 border-t border-[#F1EFEA] px-5 py-2.5 first:border-0">
+                      <span className="w-5 text-[12.5px] tabular-nums text-[#8A877F]">{i+1}</span>
+                      <span className="flex-1 truncate text-[14px] text-[#0E0D0A]">{p.query}</span>
+                      <span className="text-[12.5px] tabular-nums text-[#8A877F]">{p.search_count}×</span>
+                    </li>
                   ))}
-                </div>
+                </ol>
               </Card>
             </div>
           )}
@@ -219,27 +216,21 @@ export default function AdminAIMonitorPage() {
           {/* OCR tab */}
           {tab === 'ocr' && (
             <Card>
-              <CardHeader title="OCR Queue" action={
-                <div className="flex gap-2">
-                  {['pending','processing','completed','failed'].map(s => (
-                    <Badge key={s} variant={s === 'completed' ? 'green' : s === 'failed' ? 'red' : s === 'processing' ? 'blue' : 'gray'}>{s}</Badge>
-                  ))}
-                </div>
-              } />
+              <CardHeader title="Text extraction (OCR)" subtitle="Scanned pages and images turned into searchable text." />
               <CardBody>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-5 md:grid-cols-4">
                   {[
                     { label:'Total',     value: data.ocr?.total,     color:'text-[#0E0D0A]' },
-                    { label:'Completed', value: data.ocr?.completed, color:'text-green-600' },
-                    { label:'Failed',    value: data.ocr?.failed,    color:'text-red-600' },
-                    { label:'Avg Conf',  value: `${Math.round((data.ocr?.avg_confidence||0)*100)}%`, color:'text-[#1A3DAF]' },
+                    { label:'Completed', value: data.ocr?.completed, color:'text-[#15803D]' },
+                    { label:'Failed',    value: data.ocr?.failed,    color:'text-[#B91C1C]' },
+                    { label:'Average confidence',  value: `${Math.round((data.ocr?.avg_confidence||0)*100)}%`, color:'text-[#1A3DAF]' },
                   ].map(s => (
-                    <div key={s.label} className="p-4 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[11px] text-center">
-                      <div className={`font-display text-2xl font-bold ${s.color}`}>{s.value}</div>
-                      <div className="text-xs text-[#9B9890] mt-1">{s.label}</div>
+                    <div key={s.label}>
+                      <dt className="text-[13px] text-[#5A5750]">{s.label}</dt>
+                      <dd className={`mt-1.5 font-display text-[28px] font-semibold leading-none tabular-nums ${s.color}`}>{s.value}</dd>
                     </div>
                   ))}
-                </div>
+                </dl>
               </CardBody>
             </Card>
           )}
@@ -247,11 +238,11 @@ export default function AdminAIMonitorPage() {
       )}
 
       {!loading && !data && (
-        <div className="text-center py-20 bg-white border border-[#DDD9D0] rounded-[16px]">
-          <Brain className="w-12 h-12 text-[#DDD9D0] mx-auto mb-4" />
-          <p className="font-medium text-[#5A5750]">Connect to backend to see AI metrics</p>
-          <p className="text-sm text-[#9B9890] mt-1">Start the Docker stack and visit this page.</p>
-        </div>
+        <Card>
+          <EmptyState icon={<Brain />} title="No AI metrics yet">
+            We couldn’t reach the AI services. Check that the backend and its workers are running, then refresh.
+          </EmptyState>
+        </Card>
       )}
     </div>
   )

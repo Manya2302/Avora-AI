@@ -67,6 +67,8 @@ class UserProfile(models.Model):
     avatar_url   = models.URLField(blank=True)
     storage_used = models.BigIntegerField(default=0)  # bytes
     plan         = models.CharField(max_length=20, default='free')
+    # Per-user settings (email choices). Allowed keys: serializers.PREFERENCE_DEFAULTS.
+    preferences  = models.JSONField(default=dict, blank=True)
     created_at   = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -74,13 +76,14 @@ class UserProfile(models.Model):
 
 class PasswordResetOTP(models.Model):
     user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name='otp_requests')
-    otp_code   = models.CharField(max_length=6)
+    otp_code   = models.CharField(max_length=128)   # HMAC-SHA256 of the code, never plaintext
     is_used    = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
     class Meta:
         db_table = 'password_reset_otps'
+        indexes = [models.Index(fields=['user', 'is_used', 'expires_at'])]
 
 class UserSession(models.Model):
     user           = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sessions')
@@ -96,3 +99,4 @@ class UserSession(models.Model):
     class Meta:
         db_table = 'user_sessions'
         ordering = ['-last_active_at']
+        indexes = [models.Index(fields=['user', 'is_active'])]

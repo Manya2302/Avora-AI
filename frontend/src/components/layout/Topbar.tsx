@@ -1,51 +1,138 @@
 'use client'
+import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { Bell, HelpCircle, Upload } from 'lucide-react'
+import { Bell, Upload, Menu, Search, ChevronRight } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { cn } from '@/lib/utils'
+import { auditApi } from '@/lib/api'
+import { crumbsFor } from './nav'
 
-const titles: Record<string, { title: string; crumb: string }> = {
-  '/dashboard':    { title: 'Dashboard',          crumb: 'Overview' },
-  '/documents':    { title: 'Document Library',   crumb: 'All Documents' },
-  '/upload':       { title: 'Upload Files',        crumb: 'New Upload' },
-  '/search':       { title: 'Orivo Search',        crumb: 'AI Search' },
-  '/audit-logs':   { title: 'Audit Logs',          crumb: 'Security Logs' },
-  '/profile':      { title: 'User Profile',        crumb: 'My Profile' },
-  '/settings':     { title: 'Account Settings',    crumb: 'Settings' },
+const SEEN_KEY = 'avora:activity-seen-at'
+
+function readSeen(): number {
+  try { return Number(localStorage.getItem(SEEN_KEY)) || 0 } catch { return 0 }
+}
+function writeSeen(t: number) {
+  try { localStorage.setItem(SEEN_KEY, String(t)) } catch { /* private mode */ }
 }
 
-export default function Topbar() {
-  const router   = useRouter()
+function describe(log: any): string {
+  const action = String(log.action || '').replace(/_/g, ' ')
+  const file = log.details?.file_name || log.resource
+  return file ? `${action[0]?.toUpperCase()}${action.slice(1)} · ${file}` : `${action[0]?.toUpperCase()}${action.slice(1)}`
+}
+
+function dotColor(action: string) {
+  if (action.includes('delete') || action.includes('fail')) return 'bg-[#DC2626]'
+  if (action.includes('upload') || action.includes('create')) return 'bg-[#16A34A]'
+  return 'bg-[#9B9890]'
+}
+
+export default function Topbar({ onMenu }: { onMenu: () => void }) {
+  const router = useRouter()
   const pathname = usePathname()
-  const meta     = titles[pathname] || { title: 'SecureVault AI', crumb: '' }
+  const crumbs = crumbsFor(pathname)
+
+  const [open, setOpen] = useState(false)
+  const [logs, setLogs] = useState<any[]>([])
+  const [seenAt, setSeenAt] = useState(0)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { setSeenAt(readSeen()) }, [])
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); router.push('/search') }
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [router])
+
+  useEffect(() => {
+    const load = () => auditApi.getLogs({ limit: 6 })
+      .then(res => setLogs(res.data?.results || []))
+      .catch(() => {})
+    load()
+    const t = setInterval(load, 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  const unread = logs.filter(l => new Date(l.created_at).getTime() > seenAt).length
+
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    if (next) { const now = Date.now(); writeSeen(now); setSeenAt(now) }
+  }
 
   return (
-    <header className="h-14 bg-white border-b border-[#DDD9D0] flex items-center px-5 gap-4 z-10">
-      <div>
-        <div className="font-display text-[15.5px] font-semibold tracking-tight text-[#0E0D0A]">{meta.title}</div>
-        <div className="text-[11.5px] text-[#9B9890]">SecureVault › <span className="text-[#0E0D0A] font-medium">{meta.crumb}</span></div>
-      </div>
+    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[#DDD9D0] bg-[#F7F5F0]/95 px-4 backdrop-blur sm:px-6">
+      <button onClick={onMenu} className="-ml-1 rounded-[6px] p-1.5 text-[#5A5750] hover:bg-[#ECEAE4] lg:hidden" aria-label="Open menu">
+        <Menu className="h-[18px] w-[18px]" />
+      </button>
 
-      <div className="flex-1 max-w-xs ml-6">
-        <div
-          onClick={() => router.push('/search')}
-          className="flex items-center gap-2 px-3 py-1.5 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] cursor-pointer hover:border-[#1A3DAF]/40 transition-colors">
-          <svg className="w-3.5 h-3.5 text-[#9B9890]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          <span className="text-[13px] text-[#9B9890] font-light">Ask Orivo anything…</span>
-          <span className="font-mono text-[9px] text-[#9B9890] bg-[#ECEAE4] px-1.5 py-0.5 rounded ml-auto">⌘K</span>
-        </div>
-      </div>
+      <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-1 text-[13.5px] sm:flex">
+        {crumbs.map((c, i) => (
+          <span key={i} className="flex min-w-0 items-center gap-1">
+            {i > 0 && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#BDB8AC]" />}
+            <span className={cn('truncate', i === crumbs.length - 1 ? 'font-medium text-[#0E0D0A]' : 'text-[#8A877F]')}>{c}</span>
+          </span>
+        ))}
+      </nav>
 
-      <div className="ml-auto flex items-center gap-2">
-        <button className="w-8 h-8 rounded-[7px] flex items-center justify-center hover:bg-[#F7F5F0] transition-colors relative">
-          <Bell className="w-4 h-4 text-[#9B9890]" />
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-red-500 rounded-full border border-white" />
+      <button
+        onClick={() => router.push('/search')}
+        className="ml-auto flex h-9 w-full max-w-[300px] items-center gap-2 rounded-[8px] border border-[#DDD9D0] bg-white px-3 text-left text-[13.5px] text-[#8A877F] transition-colors hover:border-[#BDB8AC] sm:ml-6 sm:mr-auto"
+      >
+        <Search className="h-4 w-4 shrink-0" strokeWidth={1.75} />
+        <span className="flex-1 truncate">Search your documents</span>
+        <span className="kbd hidden sm:inline">Ctrl K</span>
+      </button>
+
+      <div className="relative flex items-center gap-1.5" ref={panelRef}>
+        <button
+          onClick={toggle}
+          aria-label={unread ? `Activity, ${unread} new` : 'Activity'}
+          aria-expanded={open}
+          className={cn('relative rounded-[8px] p-2 text-[#5A5750] transition-colors hover:bg-[#ECEAE4]', open && 'bg-[#ECEAE4]')}
+        >
+          <Bell className="h-[18px] w-[18px]" strokeWidth={1.75} />
+          {unread > 0 && <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full border-2 border-[#F7F5F0] bg-[#DC2626]" />}
         </button>
-        <button className="w-8 h-8 rounded-[7px] flex items-center justify-center hover:bg-[#F7F5F0] transition-colors">
-          <HelpCircle className="w-4 h-4 text-[#9B9890]" />
-        </button>
-        <button onClick={() => router.push('/upload')}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#0E0D0A] text-[#F7F5F0] rounded-[7px] text-[12.5px] font-medium hover:bg-[#252318] transition-colors">
-          <Upload className="w-3 h-3" /> Upload
+
+        {open && (
+          <div className="absolute right-0 top-11 z-50 w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-[10px] border border-[#DDD9D0] bg-white shadow-lg">
+            <div className="flex items-center justify-between border-b border-[#ECEAE4] px-4 py-3">
+              <span className="text-[14px] font-semibold">Recent activity</span>
+              <Link href="/audit-logs" onClick={() => setOpen(false)} className="link text-[13px]">Full audit log</Link>
+            </div>
+            <ul className="max-h-[320px] overflow-y-auto">
+              {logs.length ? logs.map(log => (
+                <li key={log.id} className="flex gap-3 border-b border-[#F1EFEA] px-4 py-3 last:border-0">
+                  <span className={cn('mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full', dotColor(String(log.action)))} />
+                  <div className="min-w-0">
+                    <p className="truncate text-[13.5px] text-[#0E0D0A]">{describe(log)}</p>
+                    <p className="mt-0.5 text-[12px] text-[#8A877F]">
+                      {formatDistanceToNow(new Date(log.created_at), { addSuffix: true })}
+                    </p>
+                  </div>
+                </li>
+              )) : (
+                <li className="px-4 py-10 text-center text-[13px] text-[#8A877F]">Nothing has happened yet.</li>
+              )}
+            </ul>
+          </div>
+        )}
+
+        <button
+          onClick={() => router.push('/upload')}
+          className="hidden h-9 items-center gap-1.5 rounded-[8px] bg-[#0E0D0A] px-3.5 text-[13.5px] font-medium text-[#F7F5F0] transition-colors hover:bg-[#2B2924] sm:flex"
+        >
+          <Upload className="h-3.5 w-3.5" /> Upload
         </button>
       </div>
     </header>

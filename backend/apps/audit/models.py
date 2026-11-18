@@ -30,6 +30,7 @@ class AuditLog(models.Model):
         db_table = 'audit_logs'
         ordering = ['-created_at']
         indexes  = [
+            models.Index(fields=['is_flagged', '-created_at']), models.Index(fields=['user', 'action', '-created_at']),
             models.Index(fields=['user', '-created_at']),
             models.Index(fields=['action']),
             models.Index(fields=['is_flagged']),
@@ -37,8 +38,8 @@ class AuditLog(models.Model):
 
     @classmethod
     def log(cls, request, action, document_id='', resource='', extra_data=None, is_flagged=False):
-        x_fwd = request.META.get('HTTP_X_FORWARDED_FOR')
-        ip    = x_fwd.split(',')[0] if x_fwd else request.META.get('REMOTE_ADDR')
+        from utils.net import get_client_ip
+        ip = get_client_ip(request)
         cls.objects.create(
             user=request.user if request.user.is_authenticated else None,
             action=action,

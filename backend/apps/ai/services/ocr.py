@@ -1,6 +1,18 @@
-"""Avora AI — Phase 2 OCR Service (PaddleOCR with Tesseract fallback)."""
+"""Avora AI — OCR Service (EasyOCR with graceful fallback)."""
 import re, logging
 logger = logging.getLogger(__name__)
+
+_EASYOCR_SINGLETON = None
+
+
+def _get_easyocr():
+    """Return a cached EasyOCR instance."""
+    global _EASYOCR_SINGLETON
+    if _EASYOCR_SINGLETON is None:
+        import easyocr
+        # Disable verbose logging and use CPU if GPU not available
+        _EASYOCR_SINGLETON = easyocr.Reader(['en'], gpu=False, verbose=False)
+    return _EASYOCR_SINGLETON
 
 
 def extract_text_from_bytes(file_bytes: bytes, mime_type: str = '') -> dict:
@@ -19,37 +31,71 @@ def extract_text_from_bytes(file_bytes: bytes, mime_type: str = '') -> dict:
 
 def _pdf_extract(file_bytes: bytes) -> dict:
     try:
-        import pdfplumber, io
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            pages   = [p.extract_text() or '' for p in pdf.pages]
-            text    = '\n'.join(pages)
-            if text.strip():
-                return {'raw_text': text, 'confidence': 0.96, 'engine': 'pdfplumber', 'page_count': len(pdf.pages)}
-    except ImportError:
-        pass
-    return _image_ocr(file_bytes)
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        
+        full_text = []
+        confs = []
+        total_pages = len(doc)
+        
+        for page in doc:
+            page_text = page.get_text()
+            
+            # Check if text is gibberish or non-existent (likely scanned PDF)
+            words = page_text.split()
+            avg_word_len = sum(len(w) for w in words) / len(words) if words else 0
+            
+            if avg_word_len > 3.0 and len(words) > 10:
+                full_text.append(page_text)
+                confs.append(0.96)
+            else:
+                # Poor text quality, fallback to EasyOCR for this page
+                pix = page.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                page_res = _image_ocr(img_bytes)
+                
+                if page_res.get('raw_text'):
+                    full_text.append(page_res['raw_text'])
+                    confs.append(page_res.get('confidence', 0.8))
+                elif page_text.strip():
+                    full_text.append(page_text)
+                    confs.append(0.5)
+                    
+        if full_text:
+            text = '\n'.join(full_text)
+            avg_conf = sum(confs) / len(confs) if confs else 0.8
+            return {'raw_text': text, 'confidence': round(avg_conf, 3), 'engine': 'pymupdf+easyocr', 'page_count': total_pages}
+            
+    except Exception as e:
+        logger.error(f"[Avora OCR] PyMuPDF error: {e}")
+        
+    # If fitz completely fails, we can't fall back to _image_ocr with PDF bytes.
+    return {'raw_text': '', 'confidence': 0.0, 'engine': 'failed'}
 
 
 def _image_ocr(file_bytes: bytes) -> dict:
     try:
-        from paddleocr import PaddleOCR
         import numpy as np, cv2
-        nparr  = np.frombuffer(file_bytes, np.uint8)
-        img    = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        ocr    = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
-        result = ocr.ocr(img, cls=True)
-        if result and result[0]:
-            lines      = [line[1][0] for line in result[0] if line]
-            confidences= [line[1][1] for line in result[0] if line]
-            text       = '\n'.join(lines)
-            avg_conf   = sum(confidences) / len(confidences) if confidences else 0.0
-            return {'raw_text': text, 'confidence': round(avg_conf, 3), 'engine': 'paddleocr'}
-    except ImportError:
-        logger.warning("[Avora OCR] PaddleOCR not installed — using Tesseract fallback")
-        return _tesseract_fallback(file_bytes)
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError("Could not decode image")
+
+        ocr = _get_easyocr()
+        
+        # EasyOCR returns list of (bbox, text, prob)
+        results = ocr.readtext(img)
+        lines = [r[1] for r in results if r[1]]
+        confs = [r[2] for r in results if r[2]]
+
+        if lines:
+            text     = '\n'.join(str(l) for l in lines)
+            avg_conf = sum(confs) / len(confs) if confs else 0.8
+            return {'raw_text': text, 'confidence': round(avg_conf, 3), 'engine': 'easyocr'}
     except Exception as e:
-        logger.error(f"[Avora OCR] PaddleOCR error: {e}")
-        return _tesseract_fallback(file_bytes)
+        logger.warning(f"[Avora OCR] EasyOCR error: {e}")
+
+    return _tesseract_fallback(file_bytes)
 
 
 def _tesseract_fallback(file_bytes: bytes) -> dict:
@@ -60,7 +106,8 @@ def _tesseract_fallback(file_bytes: bytes) -> dict:
         text = pytesseract.image_to_string(img)
         return {'raw_text': text, 'confidence': 0.75, 'engine': 'tesseract'}
     except Exception as e:
-        logger.error(f"[Avora OCR] Tesseract error: {e}")
+        if "tesseract is not installed" not in str(e).lower():
+            logger.error(f"[Avora OCR] Tesseract error: {e}")
         return {'raw_text': '', 'confidence': 0.0, 'engine': 'failed'}
 
 

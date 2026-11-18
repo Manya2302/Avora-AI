@@ -25,20 +25,26 @@ def find_similar_documents(document_id: str, owner_id: str, top_k: int = 10) -> 
 
         # Get target vector
         point_id = str(uuid.UUID(str(document_id)))
-        result   = client.retrieve(collection, ids=[point_id], with_vectors=True)
+        result   = client.retrieve(collection, ids=[point_id], with_vectors=True, with_payload=True)
         if not result:
             return []
         vector = result[0].vector
 
-        # Search
-        hits = client.search(
+        # Search other DOCUMENT points (mean-of-chunks vectors) of the same owner & model
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        payload = result[0].payload or {}
+        must = [FieldCondition(key="owner_id", match=MatchValue(value=str(owner_id or payload.get("owner_id", "")))),
+                FieldCondition(key="chunk_type", match=MatchValue(value="document"))]
+        if payload.get("embed_model"):
+            must.append(FieldCondition(key="embed_model", match=MatchValue(value=payload["embed_model"])))
+        hits = client.query_points(
             collection_name=collection,
-            query_vector=vector,
-            query_filter={"must": [{"key": "owner_id", "match": {"value": owner_id}}]},
+            query=vector,
+            query_filter=Filter(must=must),
             limit=top_k + 1,  # +1 because self will appear
             with_payload=True,
             score_threshold=RELATED_THRESHOLD,
-        )
+        ).points
 
         similar = []
         for hit in hits:

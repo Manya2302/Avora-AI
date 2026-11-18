@@ -18,6 +18,7 @@ import os
 import hashlib
 import hmac
 from typing import Tuple
+from functools import lru_cache
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from django.conf import settings
@@ -29,6 +30,7 @@ _NONCE_LEN  = 12        # bytes (96-bit for AES-GCM)
 _KEY_LEN    = 32        # bytes → AES-256
 
 
+@lru_cache(maxsize=4096)
 def _derive_key(user_id: str, salt: bytes) -> bytes:
     """
     Derives a 256-bit AES key from:

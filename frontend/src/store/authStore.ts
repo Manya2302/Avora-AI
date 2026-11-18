@@ -1,3 +1,4 @@
+import Cookies from 'js-cookie'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { User } from '@/types'
@@ -33,9 +34,9 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: async () => {
-        try {
-          const { data } = await usersApi.getSessions().catch(() => ({ data: { results: [] } }))
-        } catch {}
+        // End the session on the server too (blacklists the refresh token); never block sign-out on it.
+        const refresh = Cookies.get('refresh_token')
+        if (refresh) await authApi.logout(refresh).catch(() => {})
         clearTokens()
         set({ user: null })
         window.location.href = '/login'

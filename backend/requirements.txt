@@ -46,6 +46,9 @@ pytest-django==4.7.0
 factory-boy==3.3.0
 dj-database-url==2.1.0
 pdfplumber==0.10.3
+# Fast CPU OCR (ONNX PP-OCR). Optional: falls back to EasyOCR/Tesseract if absent.
+rapidocr==3.10.0
+onnxruntime==1.32.0
 # pytesseract==0.3.10
 # opencv-python-headless==4.9.0.80
 numpy

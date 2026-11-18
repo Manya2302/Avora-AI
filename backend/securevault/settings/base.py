@@ -6,6 +6,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-me-now')
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost', cast=Csv())
+# Only trust X-Forwarded-For behind a reverse proxy you control (see utils/net.py)
+TRUST_X_FORWARDED_FOR = config('TRUST_X_FORWARDED_FOR', default=False, cast=bool)
+NUM_PROXIES = config('NUM_PROXIES', default=1, cast=int)
 
 DJANGO_APPS = [
     'django.contrib.admin',
@@ -46,6 +49,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'utils.middleware.SelectiveGZipMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -80,9 +84,34 @@ AUTH_USER_MODEL = 'users.User'
 import dj_database_url
 DATABASES = {
     'default': dj_database_url.config(
-        default=config('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}')
+        default=config('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}'),
+        conn_max_age=config('DB_CONN_MAX_AGE', default=60, cast=int),   # reuse connections
+        conn_health_checks=True,
     )
 }
+if DATABASES['default']['ENGINE'].endswith('sqlite3'):
+    # Background AI threads + web requests write concurrently: wait for locks instead of
+    # failing with "database is locked". WAL mode is enabled in utils/db.py.
+    DATABASES['default']['CONN_MAX_AGE'] = 0
+    DATABASES['default'].setdefault('OPTIONS', {})['timeout'] = 30
+
+# ── Cache (rate limits, lockouts, ACLs, sessions, embeddings) ─
+# Redis shares state across all web/worker processes; LocMem is per-process (dev only).
+if config('USE_REDIS_CACHE', default=False, cast=bool):
+    CACHES = {'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': config('CACHE_URL', default=config('REDIS_URL', default='redis://localhost:6379/1')),
+        'TIMEOUT': 300,
+        'KEY_PREFIX': 'avora',
+    }}
+else:
+    CACHES = {'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'avora-default',
+        'OPTIONS': {'MAX_ENTRIES': 50000},
+    }}
+
+AUTHENTICATION_BACKENDS = ['apps.users.authentication.CaseInsensitiveEmailBackend']
 
 # ── Password Validators ───────────────────────────────────────
 AUTH_PASSWORD_VALIDATORS = [
@@ -106,7 +135,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # ── REST Framework ────────────────────────────────────────────
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.users.authentication.SessionAwareJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -124,9 +153,18 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'anon': '30/min',
-        'user': '200/min',
+        'user': '300/min',
+        'login': '10/min',
+        'register': '5/min',
+        'token_refresh': '30/min',
+        'password_reset': '5/min',
+        'ai_heavy': '30/min',
     },
+    'EXCEPTION_HANDLER': 'utils.exceptions.safe_exception_handler',
 }
+if not config('DEBUG', default=False, cast=bool):
+    # The browsable API renderer is slow and leaks schema; JSON only outside dev
+    REST_FRAMEWORK['DEFAULT_RENDERER_CLASSES'] = ('rest_framework.renderers.JSONRenderer',)
 
 # ── JWT ───────────────────────────────────────────────────────
 SIMPLE_JWT = {
@@ -151,7 +189,15 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Kolkata'
-CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=True, cast=bool)
+CELERY_TASK_ACKS_LATE = True                 # a crashed worker re-delivers the task
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1        # long AI tasks: don't hoard work on one worker
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 200      # recycle workers to cap memory growth
+CELERY_RESULT_EXPIRES = 3600
+CELERY_TASK_SOFT_TIME_LIMIT = 60 * 60
+CELERY_TASK_TIME_LIMIT = 65 * 60
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 # ── MinIO ─────────────────────────────────────────────────────
 MINIO_ENDPOINT = config('MINIO_ENDPOINT', default='localhost:9000')
@@ -178,6 +224,22 @@ OLLAMA_CHAT_MODEL = config('OLLAMA_CHAT_MODEL', default='llama3.2:1b')
 GROQ_API_KEY = config('GROQ_API_KEY', default=None)
 GEMINI_API_KEY = config('GEMINI_API_KEY', default=None)
 COHERE_API_KEY = config('COHERE_API_KEY', default=None)
+
+# ── AI ingestion & retrieval tuning ───────────────────────────
+# Figure understanding (charts/graphs/images): auto | gemini | ollama | none
+#   gemini sends figure images to Google; use "ollama" (VISION_OLLAMA_MODEL) to stay on-prem.
+VISION_PROVIDER = config('VISION_PROVIDER', default='auto')
+# Run the AI pipeline on an in-process background pool when CELERY_TASK_ALWAYS_EAGER=True,
+# so uploads return immediately instead of blocking the HTTP request.
+AI_BACKGROUND_IN_EAGER = config('AI_BACKGROUND_IN_EAGER', default=True, cast=bool)
+# Above this many accessible documents the vector ACL falls back to owner-only filtering.
+QDRANT_ACL_MAX_IDS = config('QDRANT_ACL_MAX_IDS', default=20000, cast=int)
+# Tenancy: 'default' = everyone joins one shared organization (single company);
+# 'isolated' = each signup gets its own organization (multi-tenant SaaS).
+SIGNUP_ORGANIZATION_MODE = config('SIGNUP_ORGANIZATION_MODE', default='default')
+# Other knobs read from the environment: AI_EXTRACT_WORKERS, OCR_ENGINE, OCR_DPI, FIGURE_OCR,
+# EMBED_CONCURRENCY, VISION_CONCURRENCY, VISION_MAX_FIGURES, GEMINI_VISION_MODEL,
+# VISION_OLLAMA_MODEL, AI_INPROCESS_WORKERS
 
 # ── Encryption Config ─────────────────────────────────────────
 RSA_KEY_SIZE = config('RSA_KEY_SIZE', default=4096, cast=int)

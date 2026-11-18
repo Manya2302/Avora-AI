@@ -1,11 +1,23 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlertTriangle, FileText, Clock, BrainCircuit, Activity } from 'lucide-react'
+import { AlertTriangle, FileText, Clock } from 'lucide-react'
 import { contractsApi, complianceApi } from '@/lib/api'
 import StatCard from '@/components/shared/StatCard'
-import { Card, CardHeader, CardBody } from '@/components/shared/Card'
+import { Card, CardHeader } from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
+import PageHeader from '@/components/shared/PageHeader'
+import { cn } from '@/lib/utils'
+
+const RISK_DOT: Record<string,string> = { critical:'bg-[#DC2626]', high:'bg-[#D97706]', medium:'bg-[#6B8DE3]', low:'bg-[#86C79A]' }
+
+function Dot({ className, children }: { className?: string; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1.5 text-[12.5px] text-[#5A5750]">
+      <span className={cn('h-1.5 w-1.5 rounded-full', className || 'bg-[#A8A49A]')}/>{children}
+    </span>
+  )
+}
 
 export default function RiskDashboard() {
   const router = useRouter()
@@ -24,143 +36,154 @@ export default function RiskDashboard() {
     ]).finally(()=>setLoading(false))
   }, [])
 
-  const rl = (l:string) => ({critical:'text-red-600',high:'text-amber-600',medium:'text-blue-600',low:'text-green-600'}[l]||'text-[#0E0D0A]')
-  const rb = (l:string) => ({critical:'bg-red-50 border-red-100',high:'bg-amber-50 border-amber-100',medium:'bg-blue-50 border-blue-100',low:'bg-green-50 border-green-100'}[l]||'bg-white border-[#DDD9D0]')
+  const skeleton = <div className="space-y-2 p-4">{[0,1,2].map(i=><div key={i} className="h-10 animate-pulse rounded-[6px] bg-[#F1EFEA]"/>)}</div>
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-red-50 border border-red-100 rounded-[11px] flex items-center justify-center">
-          <AlertTriangle className="w-5 h-5 text-red-600"/>
-        </div>
-        <div><h2 className="font-display text-2xl font-bold text-[#0E0D0A]">Risk Dashboard</h2>
-          <p className="text-sm text-[#9B9890]">Contract risks · Expiry alerts · Renewal calendar</p></div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Risk"
+        description="Contract risk, certificates close to expiry, and renewals coming up in the next 90 days."
+      />
 
       {risk && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <StatCard label="Critical Risk"   value={risk.critical}    icon={<AlertTriangle/>} accent="red"   onClick={()=>router.push('/contracts?risk=critical')}/>
-          <StatCard label="High Risk"       value={risk.high}        icon={<AlertTriangle/>} accent="amber" onClick={()=>router.push('/contracts?risk=high')}/>
-          <StatCard label="Expiring 90d"    value={risk.expiring_30} icon={<Clock/>}         accent="amber"/>
-          <StatCard label="Total Contracts" value={risk.total}        icon={<FileText/>}      accent="blue"/>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard label="Critical risk"       value={risk.critical}    icon={<AlertTriangle/>} accent="red"   onClick={()=>router.push('/contracts?risk=critical')}/>
+          <StatCard label="High risk"           value={risk.high}        icon={<AlertTriangle/>} accent="amber" onClick={()=>router.push('/contracts?risk=high')}/>
+          <StatCard label="Expiring in 30 days" value={risk.expiring_30} icon={<Clock/>}         accent="amber"/>
+          <StatCard label="Contracts"           value={risk.total}       icon={<FileText/>}      accent="blue"/>
         </div>
       )}
 
       {risk?.predictions?.length > 0 && (
-        <Card className="border-[#1A3DAF]/20 bg-[#F7F9FF]">
-          <CardHeader title="AI Predictive Intelligence" action={<Badge variant="blue"><BrainCircuit className="w-3 h-3 mr-1 inline" /> Forecasting Active</Badge>} />
-          <div className="divide-y divide-[#ECEAE4]">
+        <Card>
+          <CardHeader title="What to expect" subtitle="Likely issues, based on your current contracts and deadlines"/>
+          <ul>
             {risk.predictions.map((p:any, i:number) => (
-              <div key={i} className="px-5 py-4 flex gap-4 items-start hover:bg-white transition-colors cursor-default">
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5 ${p.type === 'critical' ? 'bg-red-100 text-red-600' : p.type === 'warning' ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}`}>
-                  {p.type === 'critical' ? <AlertTriangle className="w-4 h-4"/> : p.type === 'warning' ? <Activity className="w-4 h-4"/> : <BrainCircuit className="w-4 h-4"/>}
+              <li key={i} className="flex items-start gap-3 border-t border-[#F1EFEA] px-5 py-3.5 first:border-0">
+                <span className={cn('mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full', p.type === 'critical' ? 'bg-[#DC2626]' : p.type === 'warning' ? 'bg-[#D97706]' : 'bg-[#16A34A]')}/>
+                <div className="min-w-0">
+                  <h4 className="text-[14px] font-medium text-[#0E0D0A]">{p.title}</h4>
+                  <p className="mt-0.5 text-[13.5px] leading-relaxed text-[#5A5750]">{p.message}</p>
                 </div>
-                <div>
-                  <h4 className={`text-sm font-bold mb-1 ${p.type === 'critical' ? 'text-red-700' : p.type === 'warning' ? 'text-amber-700' : 'text-green-700'}`}>{p.title}</h4>
-                  <p className="text-[13px] text-[#5A5750] leading-relaxed">{p.message}</p>
-                </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Upcoming Renewals" action={<button onClick={()=>router.push('/contracts')} className="text-xs text-[#1A3DAF] hover:underline">View all →</button>}/>
-          {loading ? <div className="p-8 text-center text-sm text-[#9B9890]">Loading…</div>
-          : renewals.length===0 ? <div className="p-8 text-center text-sm text-[#9B9890]">No renewals in next 90 days.</div>
-          : <div className="divide-y divide-[#ECEAE4]">
+          <CardHeader title="Upcoming renewals" subtitle="Next 90 days" action={<button onClick={()=>router.push('/contracts')} className="link text-[13px]">All contracts</button>}/>
+          {loading ? skeleton
+          : renewals.length===0 ? <p className="px-5 py-8 text-center text-[13.5px] text-[#8A877F]">No renewals in the next 90 days.</p>
+          : <ul>
             {renewals.map(r=>(
-              <div key={r.contract_id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#F7F5F0] cursor-pointer" onClick={()=>router.push(`/contracts/${r.contract_id}`)}>
-                <div className={`w-10 h-10 rounded-[9px] flex items-center justify-center font-display text-sm font-bold flex-shrink-0 ${r.days_until<=30?'bg-red-50 text-red-600 border border-red-100':'bg-amber-50 text-amber-700 border border-amber-100'}`}>{r.days_until}d</div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium text-[#0E0D0A] truncate">{r.title}</p>
-                  <p className="font-mono text-[11px] text-[#9B9890]">{r.party_b||'—'} · {r.renewal_due}</p>
-                </div>
-                <Badge variant={r.days_until<=30?'red':r.days_until<=60?'amber':'gray'}>
-                  {r.days_until<=30?'Urgent':r.days_until<=60?'Soon':'Upcoming'}
-                </Badge>
-              </div>
+              <li key={r.contract_id} className="border-t border-[#F1EFEA] first:border-0">
+                <button className="flex w-full items-center gap-4 px-5 py-3 text-left hover:bg-[#FBFAF7]" onClick={()=>router.push(`/contracts/${r.contract_id}`)}>
+                  <span className="w-12 shrink-0 text-right">
+                    <span className={cn('font-display text-[20px] font-semibold leading-none tabular-nums', r.days_until<=30?'text-[#B91C1C]':'text-[#0E0D0A]')}>{r.days_until}</span>
+                    <span className="ml-0.5 text-[12px] text-[#8A877F]">d</span>
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[14px] font-medium text-[#0E0D0A]">{r.title}</p>
+                    <p className="text-[12.5px] text-[#8A877F]">{r.party_b||'—'} · {r.renewal_due}</p>
+                  </div>
+                  <Dot className={r.days_until<=30?'bg-[#DC2626]':r.days_until<=60?'bg-[#D97706]':'bg-[#A8A49A]'}>
+                    {r.days_until<=30?'Urgent':r.days_until<=60?'Soon':'Upcoming'}
+                  </Dot>
+                </button>
+              </li>
             ))}
-          </div>}
+          </ul>}
         </Card>
 
         <Card>
-          <CardHeader title="Certificate Expiry Alerts" action={<button onClick={()=>router.push('/compliance')} className="text-xs text-[#1A3DAF] hover:underline">Compliance →</button>}/>
-          {loading ? <div className="p-8 text-center text-sm text-[#9B9890]">Loading…</div>
-          : expiry.length===0 ? <div className="p-8 text-center text-sm text-[#9B9890]">No expiry alerts. All certificates up to date.</div>
-          : <div className="divide-y divide-[#ECEAE4]">
+          <CardHeader title="Certificates expiring" action={<button onClick={()=>router.push('/compliance')} className="link text-[13px]">Compliance</button>}/>
+          {loading ? skeleton
+          : expiry.length===0 ? <p className="px-5 py-8 text-center text-[13.5px] text-[#8A877F]">Nothing expiring. All certificates are up to date.</p>
+          : <ul>
             {expiry.slice(0,6).map(a=>(
-              <div key={a.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#F7F5F0]">
-                <Clock className={`w-4 h-4 flex-shrink-0 ${a.days_until<0?'text-red-500':a.days_until<=30?'text-amber-500':'text-[#9B9890]'}`}/>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-medium text-[#0E0D0A] truncate">{a.doc_name}</p>
-                  <p className="font-mono text-[11px] text-[#9B9890]">{a.doc_type?.replace(/_/g,' ')} · {a.expiry_date}</p>
+              <li key={a.id} className="flex items-center gap-3 border-t border-[#F1EFEA] px-5 py-3 first:border-0 hover:bg-[#FBFAF7]">
+                <Clock className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75}/>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-medium text-[#0E0D0A]">{a.doc_name}</p>
+                  <p className="text-[12.5px] text-[#8A877F]"><span className="capitalize">{a.doc_type?.replace(/_/g,' ')}</span> · {a.expiry_date}</p>
                 </div>
-                <Badge variant={a.days_until<0?'red':a.days_until<=30?'red':a.days_until<=60?'amber':'gray'}>
-                  {a.days_until<0?`Expired ${Math.abs(a.days_until)}d ago`:`${a.days_until}d left`}
-                </Badge>
-              </div>
+                <Dot className={a.days_until<0?'bg-[#DC2626]':a.days_until<=30?'bg-[#DC2626]':a.days_until<=60?'bg-[#D97706]':'bg-[#A8A49A]'}>
+                  <span className="tabular-nums">{a.days_until<0?`Expired ${Math.abs(a.days_until)}d ago`:`${a.days_until}d left`}</span>
+                </Dot>
+              </li>
             ))}
-          </div>}
+          </ul>}
         </Card>
       </div>
 
       {risk && (
-        <Card><CardHeader title="Risk Breakdown"/>
-          <CardBody>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {[['critical',risk.critical],['high',risk.high],['medium',risk.medium],['low',risk.low]].map(([l,v])=>(
-                <button key={String(l)} onClick={()=>router.push(`/contracts?risk=${l}`)}
-                  className={`p-4 border rounded-[12px] text-center hover:shadow-md transition-all hover:-translate-y-0.5 ${rb(String(l))}`}>
-                  <div className={`font-display text-3xl font-bold mb-1 ${rl(String(l))}`}>{v}</div>
-                  <div className={`text-xs font-semibold capitalize ${rl(String(l))}`}>{l} Risk</div>
-                  <div className="text-[11px] text-[#9B9890] mt-0.5">{risk.total_risks>0?Math.round(Number(v)/risk.total_risks*100):0}%</div>
-                </button>
-              ))}
-            </div>
-          </CardBody>
+        <Card>
+          <CardHeader title="Risk breakdown" subtitle="Select a level to see those contracts"/>
+          <ul className="py-1.5">
+            {[['critical',risk.critical],['high',risk.high],['medium',risk.medium],['low',risk.low]].map(([l,v])=>{
+              const pct = risk.total_risks>0?Math.round(Number(v)/risk.total_risks*100):0
+              return (
+                <li key={String(l)}>
+                  <button onClick={()=>router.push(`/contracts?risk=${l}`)}
+                    className="flex w-full items-center gap-4 px-5 py-2.5 text-left hover:bg-[#FBFAF7]">
+                    <span className="flex w-20 shrink-0 items-center gap-2 text-[13.5px] capitalize text-[#2B2924]">
+                      <span className={cn('h-1.5 w-1.5 rounded-full', RISK_DOT[String(l)])}/>{String(l)}
+                    </span>
+                    <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-[#ECEAE4]">
+                      <span className={cn('block h-full rounded-full', RISK_DOT[String(l)])} style={{width:`${Math.min(pct,100)}%`}}/>
+                    </span>
+                    <span className="w-10 shrink-0 text-right font-display text-[20px] font-semibold leading-none tabular-nums text-[#0E0D0A]">{v}</span>
+                    <span className="w-10 shrink-0 text-right text-[12.5px] tabular-nums text-[#8A877F]">{pct}%</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
         </Card>
       )}
 
       {recentRisks.length > 0 && (
         <Card>
-          <CardHeader title="Recent Detected Risks" action={<button onClick={()=>router.push('/compliance')} className="text-xs text-[#1A3DAF] hover:underline">View Compliance →</button>}/>
-          <div className="divide-y divide-[#ECEAE4]">
+          <CardHeader title="Recently found in documents" action={<button onClick={()=>router.push('/compliance')} className="link text-[13px]">Compliance</button>}/>
+          <ul>
             {recentRisks.slice(0, 10).map((risk:any) => (
-              <div key={risk.id} className="p-5 hover:bg-[#F7F5F0]">
-                <div className="flex items-center gap-3 mb-2">
-                   <AlertTriangle className={`w-4 h-4 ${risk.severity === 'critical' ? 'text-red-600' : 'text-amber-500'}`} />
-                   <p className="font-medium text-[#0E0D0A] flex-1">{risk.doc_name || 'Document'}</p>
-                   <Badge variant={risk.severity === 'critical' || risk.severity === 'high' ? 'red' : 'amber'}>{risk.severity}</Badge>
-                   <Badge variant="gray">{risk.compliance_standard}</Badge>
-                   <button onClick={async () => {
-                      await complianceApi.dismissRisk(risk.id);
-                      setRecentRisks(recentRisks.filter(r => r.id !== risk.id));
-                   }} className="text-xs text-[#9B9890] hover:text-[#1A3DAF] ml-1 font-medium transition-colors">
-                     Ignore
-                   </button>
+              <li key={risk.id} className="border-t border-[#F1EFEA] px-5 py-4 first:border-0">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                  <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[#0E0D0A]">{risk.doc_name || 'Document'}</span>
+                  <Dot className={risk.severity === 'critical' || risk.severity === 'high' ? 'bg-[#DC2626]' : 'bg-[#D97706]'}>
+                    <span className="capitalize">{risk.severity}</span>
+                  </Dot>
+                  {risk.compliance_standard && <Badge variant="gray">{risk.compliance_standard}</Badge>}
+                  <button onClick={async () => {
+                     await complianceApi.dismissRisk(risk.id);
+                     setRecentRisks(recentRisks.filter(r => r.id !== risk.id));
+                  }} className="rounded-[6px] px-1.5 py-0.5 text-[12.5px] text-[#8A877F] transition-colors hover:bg-[#ECEAE4] hover:text-[#0E0D0A]">
+                    Ignore
+                  </button>
                 </div>
-                <p className="text-xs font-semibold text-[#5A5750] mb-1 ml-7">{risk.risk_type}</p>
-                <p className="text-sm font-light text-[#252318] leading-relaxed mb-3 ml-7">{risk.description}</p>
-                
+                {risk.risk_type && <p className="mt-1 text-[13px] font-medium text-[#5A5750]">{risk.risk_type}</p>}
+                <p className="mt-1 text-[13.5px] leading-relaxed text-[#2B2924]">{risk.description}</p>
+
                 {risk.location && (
-                  <p className="text-xs font-mono text-amber-800 bg-amber-50 p-2.5 rounded border border-amber-200 ml-7 mb-3">
-                    <strong className="block text-amber-900 mb-1 uppercase tracking-wide text-[10px]">Location / Problem Snippet</strong>
-                    {risk.location}
-                  </p>
+                  <div className="mt-2.5 rounded-[8px] border border-[#ECEAE4] bg-[#FBFAF7] px-3 py-2">
+                    <p className="mb-0.5 text-[12px] text-[#8A877F]">Where it was found</p>
+                    <p className="text-[13px] leading-relaxed text-[#2B2924]">{risk.location}</p>
+                  </div>
                 )}
 
                 {risk.suggested_fix && (
-                  <p className="text-xs font-mono text-green-700 bg-green-50 p-3 rounded-lg border border-green-200 ml-7">
-                    <strong className="block text-green-800 mb-1 uppercase tracking-wide">How to Solve</strong>
-                    {risk.suggested_fix}
-                  </p>
+                  <div className="mt-2 rounded-[8px] border border-[#ECEAE4] bg-[#FBFAF7] px-3 py-2">
+                    <p className="mb-0.5 flex items-center gap-1.5 text-[12px] text-[#15803D]">
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#16A34A]"/>How to fix it
+                    </p>
+                    <p className="text-[13px] leading-relaxed text-[#2B2924]">{risk.suggested_fix}</p>
+                  </div>
                 )}
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </Card>
       )}
     </div>

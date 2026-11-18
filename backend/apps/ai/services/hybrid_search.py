@@ -19,7 +19,7 @@ import time
 from datetime import timezone as dt_tz
 from django.conf import settings
 from django.utils import timezone
-from .embeddings import generate_embedding
+from .embeddings import generate_embedding  # noqa: F401 (kept for callers importing it from here)
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,14 @@ def hybrid_search(
     """
     t0 = time.time()
     filters = filters or {}
+    from .vector_store import resolve_user
+    acl_user = resolve_user(user, owner_id)
 
-    # Step 1 – Vector Search
-    vector_scores = _vector_search(query, owner_id, top_k * 3, filters, user=user)
+    # Step 1 – Vector Search (role-aware, chunk level → best chunk per document)
+    vector_scores = _vector_search(query, owner_id, top_k * 3, filters, user=acl_user)
 
-    # Step 2 – BM25 (keyword) over OCR text stored in DB
-    bm25_scores = _bm25_search(query, owner_id, top_k * 3)
+    # Step 2 – BM25 (keyword) over OCR text of documents the user may access
+    bm25_scores = _bm25_search(query, owner_id, top_k * 3, user=acl_user)
 
     # Step 3 – Collect all candidate doc IDs
     all_doc_ids = set(vector_scores.keys()) | set(bm25_scores.keys())
@@ -106,87 +108,26 @@ def hybrid_search(
 # ── Signal 1: Vector Search ───────────────────────────────────
 
 def _vector_search(query: str, owner_id: str, top_k: int, filters: dict, user=None) -> dict:
-    """Returns {doc_id: {score, original_name, category, ...}}
-
-    Falls back to unfiltered search if Qdrant payload indexes are missing,
-    then applies Python-side owner filtering on the returned payloads.
-    """
+    """Returns {doc_id: {score, original_name, category, ...}} using the shared
+    ACL-aware retriever (owner OR RBAC-granted documents, same-model vectors only)."""
     try:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-        from utils.qdrant_client import get_client
-
-        vector = generate_embedding(query, is_query=True)
-        client = get_client()
-
-        # Build must-filter list
-        must = [FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]
-
-        if filters.get("category"):
-            must.append(FieldCondition(key="category", match=MatchValue(value=filters["category"])))
-        if filters.get("confidentiality"):
-            must.append(FieldCondition(key="confidentiality", match=MatchValue(value=filters["confidentiality"])))
-
-        def _run_query(query_filter):
-            return client.query_points(
-                collection_name=settings.QDRANT_COLLECTION,
-                query=vector,
-                query_filter=query_filter,
-                limit=top_k,
-                with_payload=True,
-            )
-
-        # ── Try with filters first ───────────────────────────────
-        try:
-            res = _run_query(Filter(must=must))
-        except Exception as filter_err:
-            err_str = str(filter_err)
-            if "Index required" in err_str or "400" in err_str:
-                logger.warning(
-                    "[Hybrid/Vector] Payload index missing — falling back to unfiltered search. "
-                    "Run: python create_qdrant_indexes.py to fix permanently."
-                )
-                # Fallback: no Qdrant filter; enforce ownership in Python below
-                res = _run_query(None)
-            else:
-                raise
-
-        # ── Parse results ────────────────────────────────────────
+        from .retrieval import retrieve_chunks
+        chunks = retrieve_chunks([query], user=user, owner_id=owner_id, limit_per_query=max(top_k * 2, 30),
+                                 filters=filters, max_results=300)
         out = {}
-        for r in res.points:
-            payload = r.payload or {}
-
-            # Python-side owner enforcement (important for fallback path)
-            point_owner = payload.get("owner_id", "")
-            if point_owner and str(point_owner) != str(owner_id):
-                continue
-
-            doc_id = payload.get("document_id")
-            if not doc_id:
-                continue
-            if doc_id not in out or r.score > out[doc_id]["score"]:
-                short_summary = payload.get("chunk_text", payload.get("short_summary", ""))[:200].strip() + "..."
-                is_encrypted = payload.get("is_encrypted", False)
-                if is_encrypted and (payload.get("short_summary_enc") or payload.get("chunk_text_enc")):
-                    try:
-                        from apps.documents.models import DocumentEncryptionKey
-                        from apps.documents.services.encryption import decrypt_string
-                        key_record = DocumentEncryptionKey.objects.get(document_id=doc_id)
-                        aes_key = key_record.encrypted_aes_key
-                        if payload.get("chunk_text_enc"):
-                            short_summary = decrypt_string(payload.get("chunk_text_enc"), aes_key)[:200].strip() + "..."
-                        elif payload.get("short_summary_enc"):
-                            short_summary = decrypt_string(payload.get("short_summary_enc"), aes_key)[:200].strip() + "..."
-                    except Exception:
-                        short_summary = "[Encrypted Content]"
-
-                out[doc_id] = {
-                    "document_id":     str(doc_id),
-                    "original_name":   payload.get("original_name", ""),
-                    "category":        payload.get("category", ""),
-                    "tags":            payload.get("tags", []),
-                    "short_summary":   short_summary,
-                    "confidentiality": payload.get("confidentiality", "internal"),
-                    "score":           r.score,
+        for c in chunks:
+            d = c["document_id"]
+            if d not in out or c["score"] > out[d]["score"]:
+                out[d] = {
+                    "document_id":     d,
+                    "original_name":   c.get("original_name", ""),
+                    "category":        c.get("category", ""),
+                    "tags":            [],
+                    "short_summary":   (c.get("text") or "")[:200].strip() + "...",
+                    "confidentiality": c.get("confidentiality", "internal"),
+                    "score":           c["score"],
+                    "page":            c.get("page_start") or None,
+                    "match_type":      c.get("chunk_type", "text"),
                 }
         return out
     except Exception as e:
@@ -197,56 +138,68 @@ def _vector_search(query: str, owner_id: str, top_k: int, filters: dict, user=No
 
 # ── Signal 2: BM25 via DB ─────────────────────────────────────
 
-def _bm25_search(query: str, owner_id: str, top_k: int) -> dict:
+def _bm25_search(query: str, owner_id: str, top_k: int, user=None) -> dict:
     """
-    Approximate BM25 over DocumentOCR.cleaned_text using Django ORM.
-    We tokenise the query and count term frequencies.
+    BM25 over DocumentOCR.cleaned_text, restricted to documents the user can access.
+    The database prefilters rows containing at least one query term (icontains), so we
+    no longer pull every document's full text into Python on every query.
     Returns {doc_id: normalised_score 0-1}
     """
     try:
+        import re
+        from django.db.models import Q
         from apps.ai.models import DocumentOCR
         from apps.documents.models import Document
 
-        tokens = [t.lower() for t in query.split() if len(t) > 2]
+        tokens = list(dict.fromkeys(t.lower() for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-\.]*", query) if len(t) > 2))
         if not tokens:
             return {}
 
-        # Fetch OCR rows for this owner
-        doc_ids = Document.objects.filter(
-            owner_id=owner_id, is_deleted=False, status="ai_ready"
-        ).values_list("id", flat=True)
+        if user is not None:
+            from apps.organizations.permissions import get_accessible_document_ids
+            scope = list(get_accessible_document_ids(user))
+        else:
+            scope = [str(i) for i in Document.objects.filter(owner_id=owner_id, is_deleted=False)
+                     .values_list("id", flat=True)]
+        if not scope:
+            return {}
+        ready = set()
+        for i in range(0, len(scope), 900):
+            ready |= {str(x) for x in Document.objects.filter(id__in=scope[i:i + 900], status="ai_ready")
+                      .values_list("id", flat=True)}
+        if not ready:
+            return {}
 
-        ocr_rows = DocumentOCR.objects.filter(document_id__in=doc_ids).only(
-            "document_id", "cleaned_text", "raw_text"
-        )
+        term_q = Q()
+        for t in tokens[:8]:
+            term_q |= Q(cleaned_text__icontains=t)
+        rows = []
+        ready = list(ready)
+        for i in range(0, len(ready), 900):
+            rows += list(DocumentOCR.objects.filter(term_q, document_id__in=ready[i:i + 900])
+                         .values_list("document_id", "cleaned_text")[:500])
 
+        if not rows:
+            return {}
+        texts = {str(d): (t or "").lower() for d, t in rows}
+        lens = {d: max(len(t.split()), 1) for d, t in texts.items()}
+        avg_dl = sum(lens.values()) / len(lens)
+        n = len(texts)
+        df = {tok: sum(1 for t in texts.values() if tok in t) for tok in tokens}
+        k1, b = 1.5, 0.75
         scores = {}
-        max_score = 0.0
-
-        for row in ocr_rows:
-            text = (row.cleaned_text or row.raw_text or "").lower()
-            if not text:
-                continue
-            word_count = len(text.split()) or 1
-
-            # Simple TF score (BM25 approximation, k1=1.5, b=0.75)
-            avg_dl = 500  # approximate average document length in words
-            k1, b = 1.5, 0.75
-            tf_score = 0.0
-            for token in tokens:
-                tf = text.count(token)
-                tf_bm25 = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * word_count / avg_dl))
-                tf_score += tf_bm25
-
-            doc_id_str = str(row.document_id)
-            scores[doc_id_str] = tf_score
-            if tf_score > max_score:
-                max_score = tf_score
-
-        # Normalise to 0-1
-        if max_score > 0:
-            return {k: v / max_score for k, v in scores.items() if v > 0}
-        return {}
+        for d, t in texts.items():
+            s = 0.0
+            for tok in tokens:
+                tf = t.count(tok)
+                if tf:
+                    idf = math.log(1 + (n - df[tok] + 0.5) / (df[tok] + 0.5))
+                    s += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * lens[d] / avg_dl))
+            if s > 0:
+                scores[d] = s
+        mx = max(scores.values(), default=0)
+        top = sorted(scores.items(), key=lambda x: -x[1])[:top_k]
+        return {k: v / mx for k, v in top} if mx else {}
     except Exception as e:
         logger.warning(f"[Hybrid/BM25] {e}")
         return {}
@@ -336,9 +289,8 @@ def _recency_scores(doc_ids: set, owner_id: str) -> dict:
     try:
         from apps.documents.models import Document
 
-        docs = Document.objects.filter(
-            id__in=doc_ids, owner_id=owner_id
-        ).values("id", "updated_at")
+        # doc_ids are already access-checked (shared documents included)
+        docs = Document.objects.filter(id__in=list(doc_ids)).values("id", "updated_at")
 
         now = timezone.now()
         lam = math.log(2) / RECENCY_HALF_LIFE_DAYS

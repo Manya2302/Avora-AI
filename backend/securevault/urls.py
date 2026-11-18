@@ -10,7 +10,8 @@ try:
     schema_view = get_schema_view(
         openapi.Info(title="Avora AI API", default_version='v1',
             description="Avora AI — Phase 1+2+3"),
-        public=True, permission_classes=[permissions.AllowAny],
+        public=settings.DEBUG,
+        permission_classes=[permissions.AllowAny] if settings.DEBUG else [permissions.IsAdminUser],
     )
     swagger_urls = [
         path('api/docs/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger'),
@@ -19,7 +20,10 @@ try:
 except ImportError:
     swagger_urls = []
 
+from utils.health import health
+
 urlpatterns = [
+    path('api/health/', health, name='health'),
     path('django-admin/', admin.site.urls),
     # Phase 1
     path('api/auth/',        include('apps.users.urls.auth_urls')),

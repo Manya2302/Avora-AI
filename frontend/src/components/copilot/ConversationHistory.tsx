@@ -1,10 +1,13 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { MessageSquare, Pin, Trash2, Search, FileText, Shield, BookOpen, Brain, AlertTriangle } from 'lucide-react'
+import { MessageSquare, Pin, Trash2, Search, FileText, Shield, BookOpen, Brain, AlertTriangle, Plus } from 'lucide-react'
 import { copilotApi } from '@/lib/api'
 import { Card } from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
+import Button from '@/components/shared/Button'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
 import type { Conversation } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import toast from 'react-hot-toast'
@@ -39,23 +42,23 @@ export default function ConversationHistory() {
     const Icon = MODE_ICON[c.mode] || FileText
     return (
       <div onClick={() => router.push(`/copilot?conv=${c.id}`)}
-        className="flex items-center gap-3 px-5 py-3.5 border-b border-[#ECEAE4] last:border-0 hover:bg-[#F7F5F0] cursor-pointer group">
-        <div className="w-9 h-9 bg-[#EBF0FF] rounded-[9px] flex items-center justify-center flex-shrink-0">
-          <Icon className="w-4 h-4 text-[#1A3DAF]"/>
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-[13.5px] font-medium text-[#0E0D0A] truncate">{c.title}</p>
-          <div className="flex items-center gap-2 mt-0.5">
-            <Badge variant={MODE_COLOR[c.mode]}>{c.mode}</Badge>
-            <span className="font-mono text-[10.5px] text-[#9B9890]">{c.message_count} msgs · {formatDateTime(c.updated_at)}</span>
+        className="group flex cursor-pointer items-center gap-3 border-t border-[#F1EFEA] px-5 py-3 first:border-0 hover:bg-[#FBFAF7]">
+        <Icon className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75}/>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] font-medium text-[#0E0D0A]">{c.title}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <Badge variant={MODE_COLOR[c.mode]} className="capitalize">{c.mode}</Badge>
+            <span className="text-[12.5px] text-[#8A877F]">{c.message_count} messages · {formatDateTime(c.updated_at)}</span>
           </div>
         </div>
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button onClick={e => pin(c.id, e)} className={`p-1.5 rounded-md hover:bg-white ${c.is_pinned ? 'text-amber-500' : 'text-[#9B9890]'}`}>
-            <Pin className="w-3.5 h-3.5" fill={c.is_pinned ? 'currentColor' : 'none'}/>
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <button onClick={e => pin(c.id, e)} aria-label={c.is_pinned ? 'Unpin conversation' : 'Pin conversation'}
+            className={`rounded-[6px] p-1.5 hover:bg-[#ECEAE4] ${c.is_pinned ? 'text-[#0E0D0A]' : 'text-[#8A877F] hover:text-[#0E0D0A]'}`}>
+            <Pin className="h-3.5 w-3.5" fill={c.is_pinned ? 'currentColor' : 'none'}/>
           </button>
-          <button onClick={e => del(c.id, e)} className="p-1.5 rounded-md hover:bg-red-50 text-[#9B9890] hover:text-red-500">
-            <Trash2 className="w-3.5 h-3.5"/>
+          <button onClick={e => del(c.id, e)} aria-label="Delete conversation"
+            className="rounded-[6px] p-1.5 text-[#8A877F] hover:bg-[#FCEFEF] hover:text-[#B91C1C]">
+            <Trash2 className="h-3.5 w-3.5"/>
           </button>
         </div>
       </div>
@@ -63,41 +66,48 @@ export default function ConversationHistory() {
   }
 
   return (
-    <div className="space-y-5 max-w-3xl">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#EBF0FF] rounded-[11px] flex items-center justify-center"><MessageSquare className="w-5 h-5 text-[#1A3DAF]"/></div>
-          <div><h2 className="font-display text-2xl font-bold text-[#0E0D0A]">Conversation History</h2>
-            <p className="text-sm text-[#9B9890]">All your past Copilot conversations</p></div>
-        </div>
-        <button onClick={() => router.push('/copilot')} className="px-4 py-2 bg-[#0E0D0A] text-white rounded-[9px] text-sm font-medium hover:bg-[#252318] transition-colors">New Chat</button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Conversation history"
+        description="Every conversation you've had with Copilot. Pin the ones you come back to."
+        actions={<Button size="sm" onClick={() => router.push('/copilot')}><Plus className="h-3.5 w-3.5"/> New chat</Button>}
+      />
 
-      <div className="flex items-center gap-2 px-3 py-2 bg-white border border-[#DDD9D0] rounded-[9px] max-w-sm">
-        <Search className="w-3.5 h-3.5 text-[#9B9890]"/>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search conversations…"
-          className="flex-1 border-none outline-none text-sm bg-transparent text-[#0E0D0A] placeholder:text-[#9B9890]"/>
-      </div>
+      <label className="relative block max-w-sm">
+        <span className="sr-only">Search conversations</span>
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A877F]"/>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search conversations"
+          className="field h-9 pl-9"/>
+      </label>
 
-      {loading ? <div className="h-40 bg-white border border-[#DDD9D0] rounded-[14px] animate-pulse"/>
-      : filtered.length === 0 ? (
-        <div className="text-center py-16 bg-white border border-[#DDD9D0] rounded-[16px]">
-          <MessageSquare className="w-10 h-10 text-[#DDD9D0] mx-auto mb-3"/>
-          <p className="text-sm text-[#9B9890]">No conversations yet. Start chatting with Avora Copilot.</p>
-        </div>
+      {loading ? (
+        <Card>
+          <div className="space-y-2 p-5">
+            {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-10 animate-pulse rounded-[6px] bg-[#F1EFEA]"/>)}
+          </div>
+        </Card>
+      ) : filtered.length === 0 ? (
+        <Card>
+          <EmptyState icon={<MessageSquare/>} title={search ? 'No conversations match that search' : 'No conversations yet'}
+            action={!search && <Button size="sm" onClick={() => router.push('/copilot')}>Start a conversation</Button>}>
+            {search ? 'Try a different word from the conversation title.' : 'Ask Copilot a question about your documents and it will show up here.'}
+          </EmptyState>
+        </Card>
       ) : (<>
         {pinned.length > 0 && (
           <Card>
-            <div className="px-4 py-2.5 border-b border-[#ECEAE4] flex items-center gap-2">
-              <Pin className="w-3.5 h-3.5 text-amber-500" fill="currentColor"/>
-              <span className="text-xs font-semibold text-[#5A5750]">Pinned</span>
+            <div className="flex items-center gap-2 border-b border-[#ECEAE4] px-5 py-3">
+              <Pin className="h-3.5 w-3.5 text-[#8A877F]" fill="currentColor"/>
+              <span className="text-[14px] font-semibold text-[#0E0D0A]">Pinned</span>
             </div>
             {pinned.map(c => <ConvCard key={c.id} c={c}/>)}
           </Card>
         )}
-        <Card>
-          {others.length === 0 && pinned.length > 0 ? null : others.map(c => <ConvCard key={c.id} c={c}/>)}
-        </Card>
+        {others.length === 0 && pinned.length > 0 ? null : (
+          <Card>
+            {others.map(c => <ConvCard key={c.id} c={c}/>)}
+          </Card>
+        )}
       </>)}
     </div>
   )

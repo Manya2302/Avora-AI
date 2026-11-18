@@ -3,6 +3,9 @@ Avora AI — Phase 2 API Views
 Semantic Search, Collections, Insights, Similarity, Recommendations, Analytics
 """
 from rest_framework.views import APIView
+from utils.exceptions import int_param
+import logging
+logger = logging.getLogger(__name__)
 from rest_framework.response import Response
 from rest_framework import generics, status, permissions
 from django.db.models import Count, Avg, Sum
@@ -22,35 +25,47 @@ from .serializers import (
 
 class SemanticSearchView(APIView):
     """POST /api/ai/search/"""
+    throttle_scope = 'ai_heavy'
+
+    def get_throttles(self):
+        from rest_framework.throttling import ScopedRateThrottle, UserRateThrottle
+        return [UserRateThrottle(), ScopedRateThrottle()]
+
     def post(self, request):
-        query = request.data.get('query', '').strip()
-        if not query:
+        query = request.data.get('query', '')
+        if not isinstance(query, str) or not query.strip():
             return Response({'error': 'Query is required.'}, status=400)
+        query = query.strip()[:1000]
+        filters = request.data.get('filters') or {}
+        if not isinstance(filters, dict):
+            return Response({'error': 'filters must be an object.'}, status=400)
+        top_k = int_param(request.data.get('top_k'), 10, 1, 50)
+        want_answer = str(request.data.get('ai_answer', 'true')).lower() not in ('false', '0', 'no')
+
+        from concurrent.futures import ThreadPoolExecutor
+        from django.db import connection
         from .services.hybrid_search import hybrid_search
-        result = hybrid_search(
-            query    = query,
-            owner_id = str(request.user.id),
-            top_k    = int(request.data.get('top_k', 10)),
-            filters  = request.data.get('filters', {}),
-            user     = request.user,
-        )
-
-        # Run RAG engine to generate the AI response for the search query
         from apps.copilot.services.rag_engine import AvoraRAGEngine
-        try:
-            rag_result = AvoraRAGEngine().query(
-                question=query,
-                owner_id=str(request.user.id),
-                mode="document"
-            )
-            result['ai_answer'] = rag_result.get('answer', '')
-            result['ai_confidence'] = rag_result.get('confidence', 0.0)
-            result['ai_sources'] = rag_result.get('sources', [])
-        except Exception as e:
-            result['ai_answer'] = ''
-            result['ai_confidence'] = 0.0
-            result['ai_sources'] = []
+        user = request.user
 
+        def _rag():
+            try:
+                return AvoraRAGEngine().query(question=query, owner_id=str(user.id), user=user, mode="document")
+            except Exception:
+                logger.exception("[Search] AI answer failed")
+                return {}
+            finally:
+                connection.close()   # worker-thread DB connection
+
+        # Ranked results and the AI answer are independent: compute them in parallel
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_rag) if want_answer else None
+            result = hybrid_search(query=query, owner_id=str(user.id), top_k=top_k, filters=filters, user=user)
+            rag = fut.result() if fut else {}
+
+        result['ai_answer'] = rag.get('answer', '')
+        result['ai_confidence'] = rag.get('confidence', 0.0)
+        result['ai_sources'] = rag.get('sources', [])
         return Response(result)
 
 
@@ -69,21 +84,38 @@ class SearchHistoryView(generics.ListAPIView):
     """GET /api/ai/search/history/"""
     serializer_class = SearchHistorySerializer
     def get_queryset(self):
-        return SearchHistory.objects.filter(user=self.request.user)[:50]
+        return SearchHistory.objects.filter(user=self.request.user).order_by('-created_at')[:50]
 
 
 class PopularSearchesView(APIView):
     """GET /api/ai/search/popular/"""
     def get(self, request):
-        popular = SearchAnalytics.objects.order_by('-search_count')[:10]
-        return Response({'popular': [{'query': p.query, 'count': p.search_count} for p in popular]})
+        # Scoped to the requesting user: the global SearchAnalytics table contains other
+        # users' (and tenants') queries, which may hold names, amounts or case details.
+        popular = (SearchHistory.objects.filter(user=request.user)
+                   .values('query').annotate(count=Count('id')).order_by('-count')[:10])
+        return Response({'popular': [{'query': p['query'], 'count': p['count']} for p in popular]})
 
 
 # ── Document Intelligence ─────────────────────────────────────
 
+def _can_read(request, document_id) -> bool:
+    """Owner, or granted by the org permission engine (department / role / share rules)."""
+    from apps.documents.models import Document
+    if Document.objects.filter(id=document_id, owner=request.user, is_deleted=False).exists():
+        return True
+    from apps.organizations.permissions import can_access_document
+    return can_access_document(request.user, str(document_id))
+
+
+_NOT_FOUND = {'error': 'Document not found.'}
+
+
 class DocumentInsightView(APIView):
     """GET /api/ai/insights/<document_id>/  — Full AI insight bundle."""
     def get(self, request, document_id):
+        if not _can_read(request, document_id):
+            return Response(_NOT_FOUND, status=404)
         def _get(Model, **kw):
             try: return Model.objects.get(**kw)
             except Model.DoesNotExist: return None
@@ -115,6 +147,8 @@ class DocumentInsightView(APIView):
 class OrivoPipelineStatusView(APIView):
     """GET /api/ai/pipeline/<document_id>/"""
     def get(self, request, document_id):
+        if not _can_read(request, document_id):
+            return Response(_NOT_FOUND, status=404)
         queue = AIProcessingQueue.objects.filter(document_id=document_id).first()
         if not queue:
             return Response({'stage': 'not_started', 'progress': 0})
@@ -125,10 +159,14 @@ class RetriggerPipelineView(APIView):
     """POST /api/ai/pipeline/<document_id>/retrigger/"""
     def post(self, request, document_id):
         from .tasks import run_ai_pipeline
+        from .services.dispatch import dispatch
+        from apps.documents.models import Document
+        if not Document.objects.filter(id=document_id, owner=request.user, is_deleted=False).exists():
+            return Response({'error': 'Document not found.'}, status=404)
         AIProcessingQueue.objects.filter(document_id=document_id).update(
             stage='queued', progress=0, error_message='', retry_count=0
         )
-        run_ai_pipeline.delay(str(document_id), str(request.user.id))
+        dispatch(run_ai_pipeline, str(document_id), str(request.user.id))
         return Response({'message': 'Pipeline retriggered.'})
 
 
@@ -137,6 +175,8 @@ class RetriggerPipelineView(APIView):
 class SimilarDocumentsView(APIView):
     """GET /api/ai/similar/<document_id>/"""
     def get(self, request, document_id):
+        if not _can_read(request, document_id):
+            return Response(_NOT_FOUND, status=404)
         from .services.similarity import find_similar_documents
         results = find_similar_documents(str(document_id), str(request.user.id))
         return Response({'document_id': str(document_id), 'similar': results})
@@ -147,6 +187,8 @@ class SimilarDocumentsView(APIView):
 class RecommendationsView(APIView):
     """GET /api/ai/recommendations/<document_id>/"""
     def get(self, request, document_id):
+        if not _can_read(request, document_id):
+            return Response(_NOT_FOUND, status=404)
         cached = DocumentRecommendation.objects.filter(
             document_id=document_id).order_by('-score')[:6]
         if cached.exists():
@@ -189,21 +231,28 @@ class SeedCollectionsView(APIView):
 class AIDashboardView(APIView):
     """GET /api/ai/dashboard/  — Per-user AI activity metrics."""
     def get(self, request):
-        uid = request.user.id
-        queue_qs = AIProcessingQueue.objects.filter(document_id__in=self._user_doc_ids(request.user))
+        from django.db.models import Q
+        queue = AIProcessingQueue.objects.filter(document_id__in=self._user_doc_ids(request.user)).aggregate(
+            completed=Count('id', filter=Q(stage='completed')),
+            processing=Count('id', filter=Q(stage__in=['queued', 'ocr', 'text_extraction', 'embedding',
+                                                       'classification', 'storing'])),
+            failed=Count('id', filter=Q(stage='failed')),
+        )
+        recent = list(SearchHistory.objects.filter(user=request.user)
+                      .order_by('-created_at').values('query', 'created_at')[:5])
         return Response({
-            'total_processed': queue_qs.filter(stage='completed').count(),
-            'processing':      queue_qs.filter(stage__in=['queued','ocr','embedding','classification']).count(),
-            'failed':          queue_qs.filter(stage='failed').count(),
+            'total_processed': queue['completed'],
+            'processing':      queue['processing'],
+            'failed':          queue['failed'],
             'search_count':    SearchHistory.objects.filter(user=request.user).count(),
             'collections':     SmartCollection.objects.filter(owner=request.user).count(),
             'top_categories':  self._top_categories(request.user),
-            'recent_searches': list(SearchHistory.objects.filter(user=request.user).values('query','created_at')[:5]),
+            'recent_searches': recent,
         })
 
     def _user_doc_ids(self, user):
         from apps.documents.models import Document
-        return Document.objects.filter(owner=user).values_list('id', flat=True)
+        return Document.objects.filter(owner=user, is_deleted=False).values_list('id', flat=True)
 
     def _top_categories(self, user):
         doc_ids = self._user_doc_ids(user)

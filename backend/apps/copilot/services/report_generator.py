@@ -50,65 +50,85 @@ Cite each source document.""",
 }
 
 
-def generate_ai_report(owner, report_type: str, doc_ids: list, custom_prompt: str = "") -> dict:
-    """Generate a full AI report from multiple documents."""
-    from apps.ai.models import DocumentOCR
+def create_report(owner, report_type: str, doc_ids: list, custom_prompt: str = "") -> AIReport:
+    """Create the report row in GENERATING state (instant). The LLM work runs in run_report()."""
     from apps.documents.models import Document
-
-    report = AIReport.objects.create(
+    if report_type not in REPORT_PROMPTS and report_type != "custom":
+        report_type = "custom"
+    valid_ids = [str(i) for i in Document.objects.filter(id__in=doc_ids, owner=owner, is_deleted=False)
+                 .values_list("id", flat=True)]
+    return AIReport.objects.create(
         owner=owner,
         title=_report_title(report_type),
         report_type=report_type,
         status=AIReport.Status.GENERATING,
-        document_ids=doc_ids,
-        doc_count=len(doc_ids),
+        document_ids=valid_ids,
+        doc_count=len(valid_ids),
         prompt_used=custom_prompt or REPORT_PROMPTS.get(report_type, ""),
     )
 
+
+def run_report(report_id: str) -> dict:
+    """Do the slow part (context gathering + LLM) for a GENERATING report."""
+    from apps.documents.models import Document
+    report = AIReport.objects.select_related("owner").get(id=report_id)
+    if report.status != AIReport.Status.GENERATING:
+        return _summary(report)
     try:
-        # Gather document content
-        docs    = Document.objects.filter(id__in=doc_ids, owner=owner)
+        docs = Document.objects.filter(id__in=report.document_ids, owner=report.owner, is_deleted=False) \
+            .only("id", "original_name")
         context = _build_report_context(docs)
-        prompt  = custom_prompt or REPORT_PROMPTS.get(report_type, "Analyze these documents and generate a comprehensive report.")
+        prompt = report.prompt_used or "Analyze these documents and generate a comprehensive report."
         full_prompt = f"{prompt}\n\nDOCUMENT CONTEXT:\n{context[:12000]}\n\nGenerate the report now:"
 
         answer = _call_ollama(full_prompt, max_tokens=1200)
-
         key_findings, recs = _extract_findings(answer)
 
-        report.executive_summary  = _extract_summary(answer)
-        report.full_content       = answer
-        report.key_findings       = key_findings
-        report.recommendations    = recs
-        report.confidence_score   = 0.82 if context else 0.45
-        report.status             = AIReport.Status.READY
-        report.generated_at       = timezone.now()
+        report.executive_summary = _extract_summary(answer)
+        report.full_content = answer
+        report.key_findings = key_findings
+        report.recommendations = recs
+        report.confidence_score = 0.82 if context else 0.45
+        report.status = AIReport.Status.READY
+        report.generated_at = timezone.now()
         report.save()
+        logger.info(f"[Report] Generated {report.id}")
+    except Exception:
+        logger.exception(f"[Report] generation failed for {report_id}")
+        AIReport.objects.filter(id=report_id).update(status=AIReport.Status.FAILED)
+        report.status = AIReport.Status.FAILED
+    return _summary(report)
 
-        logger.info(f"[Report] Generated {report.id} for {owner.email}")
-        return {"report_id": str(report.id), "status": "ready", "title": report.title,
-                "executive_summary": report.executive_summary, "key_findings": key_findings,
-                "recommendations": recs, "doc_count": len(doc_ids)}
 
-    except Exception as e:
-        report.status = AIReport.Status.FAILED; report.save()
-        logger.error(f"[Report] Error: {e}")
-        return {"report_id": str(report.id), "status": "failed", "error": str(e)}
+def _summary(report) -> dict:
+    out = {"report_id": str(report.id), "status": report.status, "title": report.title,
+           "doc_count": report.doc_count}
+    if report.status == AIReport.Status.READY:
+        out.update(executive_summary=report.executive_summary, key_findings=report.key_findings,
+                   recommendations=report.recommendations)
+    elif report.status == AIReport.Status.FAILED:
+        out["error"] = "Report generation failed."
+    return out
+
+
+def generate_ai_report(owner, report_type: str, doc_ids: list, custom_prompt: str = "") -> dict:
+    """Synchronous convenience wrapper (create + run). The API uses create_report + a background task."""
+    return run_report(str(create_report(owner, report_type, doc_ids, custom_prompt).id))
 
 
 def _build_report_context(docs) -> str:
     from apps.ai.models import DocumentOCR, DocumentSummary
+    docs = list(docs[:12])
+    ids = [d.id for d in docs]
+    summaries = {s.document_id: (s.medium_summary or s.short_summary)
+                 for s in DocumentSummary.objects.filter(document_id__in=ids)}
+    missing = [i for i in ids if not summaries.get(i)]
+    ocr_text = {o.document_id: (o.cleaned_text or o.raw_text or "")[:1000]
+                for o in DocumentOCR.objects.filter(document_id__in=missing, status="completed")
+                .only("document_id", "cleaned_text", "raw_text")} if missing else {}
     parts = []
-    for doc in docs[:12]:
-        try:
-            summary = DocumentSummary.objects.get(document_id=doc.id)
-            text    = summary.medium_summary or summary.short_summary
-        except:
-            try:
-                ocr  = DocumentOCR.objects.get(document_id=doc.id, status="completed")
-                text = (ocr.cleaned_text or ocr.raw_text)[:1000]
-            except:
-                text = ""
+    for doc in docs:
+        text = summaries.get(doc.id) or ocr_text.get(doc.id, "")
         parts.append(f"[{doc.original_name}]\n{text}")
     return "\n\n---\n\n".join(parts)
 

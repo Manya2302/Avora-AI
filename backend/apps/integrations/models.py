@@ -131,7 +131,102 @@ class SyncEvent(models.Model):
 
     class Meta:
         db_table = 'integration_sync_events'
+        indexes = [models.Index(fields=['integration', '-created_at'])]
         ordering = ['-created_at']
+
+
+class GDriveSyncSession(models.Model):
+    """
+    Tracks one complete Google Drive sync run with live counters.
+    The background task updates this record; the frontend polls it.
+    """
+    PHASE_CHOICES = [
+        ('queued',      'Queued'),
+        ('scanning',    'Scanning Folders'),
+        ('downloading', 'Downloading'),
+        ('extracting',  'Extracting Text'),
+        ('embedding',   'Generating Embeddings'),
+        ('completed',   'Completed'),
+        ('failed',      'Failed'),
+    ]
+    STATUS_CHOICES = [
+        ('running',    'Running'),
+        ('completed',  'Completed'),
+        ('failed',     'Failed'),
+        ('cancelled',  'Cancelled'),
+    ]
+
+    id            = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    integration   = models.ForeignKey(
+        IntegrationConfig, on_delete=models.CASCADE, related_name='sync_sessions'
+    )
+    # Pre-scan totals
+    total_folders       = models.IntegerField(default=0)
+    total_files         = models.IntegerField(default=0)
+    supported_files     = models.IntegerField(default=0)
+    unsupported_files   = models.IntegerField(default=0)
+    estimated_size_bytes = models.BigIntegerField(default=0)
+    # Live counters (updated by background task)
+    files_queued      = models.IntegerField(default=0)
+    files_downloading = models.IntegerField(default=0)
+    files_processing  = models.IntegerField(default=0)
+    files_embedding   = models.IntegerField(default=0)
+    files_completed   = models.IntegerField(default=0)
+    files_skipped     = models.IntegerField(default=0)
+    files_failed      = models.IntegerField(default=0)
+    # State
+    current_phase   = models.CharField(max_length=30, choices=PHASE_CHOICES, default='queued')
+    current_file    = models.CharField(max_length=500, blank=True)
+    overall_status  = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
+    error_log       = models.JSONField(default=list)   # [{file, reason, retry_count}]
+    elapsed_seconds = models.IntegerField(default=0)
+    started_at      = models.DateTimeField(auto_now_add=True)
+    finished_at     = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'gdrive_sync_sessions'
+        indexes = [models.Index(fields=['integration', '-started_at'])]
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f"GDriveSyncSession({self.id}, status={self.overall_status})"
+
+
+class GDriveFileStatus(models.Model):
+    """
+    Per-file processing state within a sync session.
+    """
+    FILE_STATUS_CHOICES = [
+        ('queued',      'Queued'),
+        ('downloading', 'Downloading'),
+        ('processing',  'Processing'),
+        ('ocr',         'OCR'),
+        ('embedding',   'Embedding'),
+        ('completed',   'Completed'),
+        ('skipped',     'Skipped'),
+        ('failed',      'Failed'),
+    ]
+
+    id             = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    session        = models.ForeignKey(
+        GDriveSyncSession, on_delete=models.CASCADE, related_name='file_statuses'
+    )
+    gdrive_file_id = models.CharField(max_length=200)
+    file_name      = models.CharField(max_length=500)
+    file_size      = models.BigIntegerField(default=0)
+    mime_type      = models.CharField(max_length=200, blank=True)
+    status         = models.CharField(max_length=20, choices=FILE_STATUS_CHOICES, default='queued')
+    error_message  = models.TextField(blank=True)
+    retry_count    = models.IntegerField(default=0)
+    file_hash      = models.CharField(max_length=64, blank=True)   # SHA-256 for dedup
+    is_duplicate   = models.BooleanField(default=False)
+    created_at     = models.DateTimeField(auto_now_add=True)
+    updated_at     = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'gdrive_file_statuses'
+        indexes = [models.Index(fields=['session', 'status']), models.Index(fields=['session', 'updated_at'])]
+        ordering = ['created_at']
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -1,10 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { Package, CheckCircle2, AlertTriangle, Download, Plus } from 'lucide-react'
+import { Package, Download, Plus } from 'lucide-react'
 import { complianceApi } from '@/lib/api'
 import { Card, CardBody } from '@/components/shared/Card'
 import Button from '@/components/shared/Button'
 import Badge from '@/components/shared/Badge'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
 import toast from 'react-hot-toast'
 import type { AuditPackage } from '@/types'
 
@@ -16,64 +18,98 @@ export default function AuditPackagePage() {
   useEffect(()=>{ load() },[])
   const generate = async () => {
     setGen(true)
-    try { await complianceApi.generatePackage(); toast.success('Audit package generated!'); load() }
-    catch { toast.error('Generation failed.') } finally { setGen(false) }
+    try { await complianceApi.generatePackage(); toast.success('Audit package generated.'); load() }
+    catch { toast.error('Couldn’t generate the package. Try again.') } finally { setGen(false) }
   }
-  const rc = (s:number) => s>=80?'text-green-600':s>=60?'text-amber-600':'text-red-600'
+  const [downloading, setDownloading] = useState<string | null>(null)
+  const download = async (pkg: AuditPackage) => {
+    setDownloading(pkg.id)
+    try {
+      const { data } = await complianceApi.downloadPackage(pkg.id)
+      const url = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(pkg.name || 'audit-package').replace(/[\\/:*?"<>|]+/g, '_')}.zip`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch {
+      toast.error('Couldn’t download the package. Try again.')
+    } finally { setDownloading(null) }
+  }
+  const rc = (s:number) => s>=80?'bg-[#16A34A]':s>=60?'bg-[#D97706]':'bg-[#DC2626]'
   return (
-    <div className="space-y-5 max-w-4xl">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#EBF0FF] rounded-[11px] flex items-center justify-center"><Package className="w-5 h-5 text-[#1A3DAF]"/></div>
-          <div><h2 className="font-display text-2xl font-bold text-[#0E0D0A]">Audit Packages</h2>
-            <p className="text-sm text-[#9B9890]">Generate audit-ready bundles in one click</p></div>
-        </div>
-        <Button loading={gen} onClick={generate}><Plus className="w-3.5 h-3.5"/> Generate Package</Button>
+    <div className="space-y-6">
+      <PageHeader
+        title="Audit packages"
+        description="Bundle your compliance documents for an auditor, with a readiness score and a list of gaps."
+        actions={<Button size="sm" loading={gen} onClick={generate}><Plus className="h-3.5 w-3.5"/> Generate package</Button>}
+      />
+
+      <div className="rounded-[12px] border border-[#DDD9D0] bg-[#FBFAF7] px-5 py-4">
+        <h3 className="text-[14px] font-semibold text-[#0E0D0A]">What goes into a package</h3>
+        <p className="mt-1 max-w-2xl text-[13.5px] leading-relaxed text-[#5A5750]">
+          Avora gathers your compliance documents — tax filings, certificates, contracts and audit reports — and bundles
+          them with a readiness score and a gap analysis, so you can hand them straight to an auditor.
+        </p>
       </div>
-      <div className="flex items-start gap-4 p-5 bg-[#EBF0FF] border border-[#1A3DAF]/12 rounded-[14px]">
-        <Package className="w-7 h-7 text-[#1A3DAF] flex-shrink-0"/>
-        <div><h3 className="font-semibold text-[#1A3DAF] mb-1">What's included?</h3>
-          <p className="text-sm text-[#1A3DAF]/75">Avora AI collects all compliance documents — tax filings, certificates, contracts, audit reports — and bundles them with a readiness score and gap analysis. Ready for auditors in one click.</p></div>
-      </div>
-      {loading ? <div className="h-32 bg-white border border-[#DDD9D0] rounded-[14px] animate-pulse"/>
-      : packages.length === 0 ? (
-        <div className="text-center py-20 bg-white border border-[#DDD9D0] rounded-[16px]">
-          <Package className="w-12 h-12 text-[#DDD9D0] mx-auto mb-4"/>
-          <p className="font-display text-lg font-semibold text-[#0E0D0A] mb-2">No packages yet</p>
-          <p className="text-sm text-[#9B9890] mb-5">Generate your first audit package from vault documents.</p>
-          <Button loading={gen} onClick={generate}><Plus className="w-4 h-4"/> Generate Now</Button>
-        </div>
-      ) : packages.map(pkg => (
-        <Card key={pkg.id}>
-          <CardBody>
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-              <div className="flex items-start gap-4">
-                <div className={`w-12 h-12 rounded-[11px] flex items-center justify-center flex-shrink-0 ${pkg.status==='ready'?'bg-green-50 border border-green-100':pkg.status==='failed'?'bg-red-50 border border-red-100':'bg-[#EBF0FF] border border-[#1A3DAF]/15'}`}>
-                  {pkg.status==='ready'?<CheckCircle2 className="w-6 h-6 text-green-600"/>:<AlertTriangle className="w-6 h-6 text-red-500"/>}
-                </div>
-                <div>
-                  <h3 className="font-semibold text-[#0E0D0A] mb-1">{pkg.name}</h3>
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <span className="font-mono text-xs text-[#9B9890]">{pkg.doc_count} docs</span>
-                    <span className={`font-display text-lg font-bold ${rc(pkg.readiness_score)}`}>{Math.round(pkg.readiness_score)}% ready</span>
-                    <Badge variant={pkg.status==='ready'?'green':pkg.status==='failed'?'red':'blue'}>{pkg.status}</Badge>
-                  </div>
-                  {pkg.generated_at && <p className="font-mono text-[11px] text-[#9B9890] mt-1">Generated: {new Date(pkg.generated_at).toLocaleString()}</p>}
-                </div>
-              </div>
-              {pkg.status==='ready' && <Button variant="dark" size="sm"><Download className="w-3.5 h-3.5"/> Download ZIP</Button>}
-            </div>
-            {pkg.gaps?.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-[#ECEAE4]">
-                <p className="text-xs font-semibold text-red-600 mb-2">Gaps ({pkg.gaps.length}):</p>
-                <div className="flex flex-wrap gap-2">
-                  {pkg.gaps.map((g,i)=><span key={i} className="font-mono text-[10px] px-2 py-1 bg-red-50 border border-red-100 text-red-600 rounded-full">{g}</span>)}
-                </div>
-              </div>
-            )}
-          </CardBody>
+
+      {loading ? (
+        <Card><div className="space-y-3 p-5">{[0,1].map(i=><div key={i} className="h-12 animate-pulse rounded-[6px] bg-[#F1EFEA]"/>)}</div></Card>
+      ) : packages.length === 0 ? (
+        <Card>
+          <EmptyState icon={<Package/>} title="No packages yet"
+            action={<Button size="sm" loading={gen} onClick={generate}><Plus className="h-3.5 w-3.5"/> Generate package</Button>}>
+            Generate one from the documents already in your vault. It takes a moment.
+          </EmptyState>
         </Card>
-      ))}
+      ) : (
+        <div className="space-y-3">
+          {packages.map(pkg => (
+            <Card key={pkg.id}>
+              <CardBody>
+                <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="truncate text-[14px] font-semibold text-[#0E0D0A]">{pkg.name}</h3>
+                      <Badge variant={pkg.status==='ready'?'green':pkg.status==='failed'?'red':'blue'}><span className="capitalize">{pkg.status}</span></Badge>
+                    </div>
+                    <p className="mt-1 text-[12.5px] text-[#8A877F]">
+                      {pkg.doc_count} documents
+                      {pkg.generated_at && <> · Generated {new Date(pkg.generated_at).toLocaleString()}</>}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-5">
+                    <div className="w-36">
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="font-display text-[28px] font-semibold leading-none tabular-nums text-[#0E0D0A]">{Math.round(pkg.readiness_score)}%</span>
+                        <span className="text-[12.5px] text-[#8A877F]">ready</span>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#ECEAE4]">
+                        <div className={`h-full rounded-full ${rc(pkg.readiness_score)}`} style={{width:`${Math.min(100, Math.max(0, pkg.readiness_score))}%`}}/>
+                      </div>
+                    </div>
+                    {pkg.status==='ready' && <Button variant="ghost" size="sm" loading={downloading===pkg.id} onClick={() => download(pkg)}
+                      title="Documents in this package, plus a manifest and gap summary"><Download className="h-3.5 w-3.5"/> Download ZIP</Button>}
+                  </div>
+                </div>
+
+                {pkg.gaps?.length > 0 && (
+                  <div className="mt-4 border-t border-[#ECEAE4] pt-4">
+                    <p className="mb-2 flex items-center gap-1.5 text-[12.5px] text-[#5A5750]">
+                      <span className="h-1.5 w-1.5 rounded-full bg-[#D97706]"/>
+                      {pkg.gaps.length} gap{pkg.gaps.length>1?'s':''} to close
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {pkg.gaps.map((g,i)=><span key={i} className="rounded-[5px] bg-[#F1EFEA] px-2 py-1 text-[12px] text-[#5A5750]">{g}</span>)}
+                    </div>
+                  </div>
+                )}
+              </CardBody>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

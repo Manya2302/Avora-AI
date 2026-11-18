@@ -27,6 +27,7 @@ class CopilotConversation(models.Model):
 
     class Meta:
         db_table = "copilot_conversations"
+        indexes = [models.Index(fields=['owner', 'is_archived', '-updated_at'])]
         ordering = ["-updated_at"]
 
 
@@ -51,6 +52,7 @@ class CopilotMessage(models.Model):
 
     class Meta:
         db_table = "copilot_messages"
+        indexes = [models.Index(fields=['conversation', 'created_at'])]
         ordering = ["created_at"]
 
 
@@ -97,6 +99,7 @@ class PromptTemplate(models.Model):
 
     class Meta:
         db_table = "prompt_templates"
+        indexes = [models.Index(fields=['is_builtin', '-use_count']), models.Index(fields=['owner'])]
         ordering = ["-use_count", "title"]
 
 
@@ -136,6 +139,7 @@ class AIReport(models.Model):
 
     class Meta:
         db_table = "ai_reports"
+        indexes = [models.Index(fields=['owner', '-created_at'])]
         ordering = ["-created_at"]
 
 
@@ -180,4 +184,5 @@ class AIRecommendation(models.Model):
 
     class Meta:
         db_table = "ai_recommendations"
+        indexes = [models.Index(fields=['owner', 'is_dismissed'])]
         ordering = ["priority", "-created_at"]

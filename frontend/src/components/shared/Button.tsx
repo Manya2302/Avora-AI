@@ -3,22 +3,23 @@ import { ButtonHTMLAttributes, forwardRef } from 'react'
 import { Loader2 } from 'lucide-react'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'dark' | 'ghost' | 'accent' | 'red' | 'green'
+  variant?: 'dark' | 'ghost' | 'accent' | 'red' | 'green' | 'plain'
   size?: 'sm' | 'md' | 'lg'
   loading?: boolean
 }
 
 const variants = {
-  dark:   'bg-[#0E0D0A] text-[#F7F5F0] border-[#0E0D0A] hover:bg-[#252318]',
-  ghost:  'bg-transparent text-[#5A5750] border-[#DDD9D0] hover:bg-white hover:text-[#0E0D0A]',
+  dark:   'bg-[#0E0D0A] text-[#F7F5F0] border-[#0E0D0A] hover:bg-[#2B2924] active:bg-black',
   accent: 'bg-[#1A3DAF] text-white border-[#1A3DAF] hover:bg-[#14308A]',
-  red:    'bg-[#FEF2F2] text-[#DC2626] border-red-200 hover:bg-red-100',
-  green:  'bg-[#F0FDF4] text-[#16A34A] border-green-200 hover:bg-green-100',
+  ghost:  'bg-white text-[#2B2924] border-[#DDD9D0] hover:border-[#BDB8AC] hover:bg-[#FBFAF7]',
+  plain:  'bg-transparent text-[#5A5750] border-transparent hover:bg-[#ECEAE4]/70 hover:text-[#0E0D0A]',
+  red:    'bg-white text-[#B91C1C] border-[#F1C6C6] hover:bg-[#FEF2F2]',
+  green:  'bg-white text-[#15803D] border-[#BFE3CB] hover:bg-[#F0FDF4]',
 }
 const sizes = {
-  sm: 'px-3 py-1.5 text-xs',
-  md: 'px-4 py-2 text-sm',
-  lg: 'px-6 py-3 text-sm',
+  sm: 'h-8 px-3 text-[13px] gap-1.5',
+  md: 'h-9 px-4 text-[14px] gap-2',
+  lg: 'h-11 px-5 text-[15px] gap-2',
 }
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
@@ -27,12 +28,13 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       ref={ref}
       disabled={disabled || loading}
       className={cn(
-        'inline-flex items-center justify-center gap-2 font-medium border rounded-[7px] transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed',
+        'inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-[8px] border font-medium',
+        'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-55',
         variants[variant], sizes[size], className
       )}
       {...props}
     >
-      {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+      {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
       {children}
     </button>
   )

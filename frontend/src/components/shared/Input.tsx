@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { InputHTMLAttributes, forwardRef } from 'react'
+import { InputHTMLAttributes, forwardRef, useId } from 'react'
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string
@@ -8,23 +8,29 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, hint, className, ...props }, ref) => (
-    <div className="flex flex-col gap-1.5">
-      {label && <label className="text-xs font-semibold text-[#0E0D0A] tracking-[0.2px]">{label}</label>}
-      <input
-        ref={ref}
-        className={cn(
-          'w-full px-3 py-2.5 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] font-light text-sm text-[#0E0D0A] outline-none transition-all placeholder:text-[#9B9890]',
-          'focus:border-[#1A3DAF] focus:bg-white focus:ring-2 focus:ring-[#1A3DAF]/8',
-          error && 'border-red-400 focus:border-red-400 focus:ring-red-100',
-          className
-        )}
-        {...props}
-      />
-      {error && <span className="text-xs text-[#DC2626]">{error}</span>}
-      {hint && !error && <span className="text-xs text-[#9B9890]">{hint}</span>}
-    </div>
-  )
+  ({ label, error, hint, className, id, ...props }, ref) => {
+    const autoId = useId()
+    const inputId = id || autoId
+    return (
+      <div className="flex flex-col gap-1.5">
+        {label && <label htmlFor={inputId} className="text-[13px] font-medium text-[#2B2924]">{label}</label>}
+        <input
+          ref={ref}
+          id={inputId}
+          aria-invalid={!!error || undefined}
+          className={cn(
+            'h-10 w-full rounded-[8px] border border-[#DDD9D0] bg-white px-3 text-[14px] text-[#0E0D0A] outline-none transition-colors placeholder:text-[#A8A49B]',
+            'hover:border-[#C9C4B9] focus:border-[#1A3DAF] focus:ring-[3px] focus:ring-[#1A3DAF]/10',
+            error && 'border-[#E5A3A3] focus:border-[#DC2626] focus:ring-[#DC2626]/10',
+            className
+          )}
+          {...props}
+        />
+        {error && <span className="text-[12.5px] text-[#B91C1C]">{error}</span>}
+        {hint && !error && <span className="text-[12.5px] text-[#8A877F]">{hint}</span>}
+      </div>
+    )
+  }
 )
 Input.displayName = 'Input'
 export default Input

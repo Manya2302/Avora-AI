@@ -38,7 +38,7 @@ class AvoraTrainingPipeline:
                     c = json.loads(line)
                     if not c.get("is_improvement"): continue
                     samples.append({"instruction":templates.get(c["field"],f"Extract {c['field']}."),"input":c["text_context"],"output":c["human_correct"]})
-                except: continue
+                except Exception: continue
         out = TRAINING_DATA_DIR / "alpaca_dataset.json"
         with open(out,"w") as f: json.dump(samples,f,indent=2)
         logger.info(f"[Training] {len(samples)} samples → {out}")
@@ -78,7 +78,7 @@ class AvoraTrainingPipeline:
             try:
                 from celery import current_app
                 current_app.send_task("apps.ai.engine.training_pipeline.trigger_finetune_job")
-            except: pass
+            except Exception: pass
 
 from celery import shared_task
 

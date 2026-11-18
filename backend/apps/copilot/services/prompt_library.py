@@ -55,4 +55,4 @@ def increment_use_count(template_id: str):
 
 try:
     from django.db import models
-except: pass
+except Exception: pass

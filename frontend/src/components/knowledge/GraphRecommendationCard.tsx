@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Network, Sparkles, CheckCircle2, XCircle, ChevronRight, Loader2, AlertTriangle } from 'lucide-react'
 import { knowledgeApi } from '@/lib/api'
 import toast from 'react-hot-toast'
+import Button from '@/components/shared/Button'
 
 interface ScoreResult {
   graph_score: number
@@ -21,15 +22,15 @@ interface Props {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  vendor:      'bg-blue-50 text-blue-700 border-blue-100',
-  customer:    'bg-green-50 text-green-700 border-green-100',
-  employee:    'bg-purple-50 text-purple-700 border-purple-100',
-  contract:    'bg-amber-50 text-amber-700 border-amber-100',
-  invoice:     'bg-orange-50 text-orange-700 border-orange-100',
-  certificate: 'bg-teal-50 text-teal-700 border-teal-100',
-  policy:      'bg-rose-50 text-rose-700 border-rose-100',
-  project:     'bg-indigo-50 text-indigo-700 border-indigo-100',
-  department:  'bg-gray-50 text-gray-700 border-gray-200',
+  vendor:      'bg-[#EEF2FC] text-[#1A3DAF]',
+  customer:    'bg-[#EDF7F0] text-[#15803D]',
+  employee:    'bg-[#F5EEFB] text-[#7E22CE]',
+  contract:    'bg-[#FBF3E4] text-[#A35A04]',
+  invoice:     'bg-[#FCEFEF] text-[#B91C1C]',
+  certificate: 'bg-[#EAF5F6] text-[#0E7490]',
+  policy:      'bg-[#F1EFEA] text-[#2B2924]',
+  project:     'bg-[#EEF2FC] text-[#14308A]',
+  department:  'bg-[#F1EFEA] text-[#5A5750]',
 }
 
 export default function GraphRecommendationCard({ documentId, docName, onDone }: Props) {
@@ -45,9 +46,9 @@ export default function GraphRecommendationCard({ documentId, docName, onDone }:
       setResult(data)
     } catch (e: any) {
       if (e?.response?.status === 400 && e.response.data?.error === 'No text available to score.') {
-        toast.error('Document is still processing (OCR). Please wait a few seconds and try again.')
+        toast.error('The document text is still being read. Try again in a few seconds.')
       } else {
-        toast.error('Graph scoring failed. The document is still indexed for search.')
+        toast.error('Couldn’t analyse the document. It’s still searchable.')
       }
     } finally {
       setScoring(false)
@@ -59,86 +60,75 @@ export default function GraphRecommendationCard({ documentId, docName, onDone }:
     setConfirming(true)
     try {
       await knowledgeApi.confirm({ document_id: documentId, doc_name: docName, score_result: result })
-      toast.success('Document added to Knowledge Graph!')
+      toast.success('Added to the knowledge map.')
       setDone(true)
       onDone?.()
     } catch {
-      toast.error('Failed to add to graph.')
+      toast.error('Couldn’t add it to the knowledge map.')
     } finally {
       setConfirming(false)
     }
   }
 
   const handleSkip = () => {
-    toast.success('Document skipped from Knowledge Graph. Still searchable via RAG.')
+    toast.success('Skipped. The document is still searchable.')
     setDone(true)
     onDone?.()
   }
 
   const scoreColor = result
-    ? result.graph_score >= 75 ? 'text-green-600'
-    : result.graph_score >= 50 ? 'text-amber-600'
-    : 'text-[#9B9890]'
+    ? result.graph_score >= 75 ? 'text-[#15803D]'
+    : result.graph_score >= 50 ? 'text-[#A35A04]'
+    : 'text-[#5A5750]'
     : ''
 
   const scoreBg = result
-    ? result.graph_score >= 75 ? 'bg-green-50 border-green-200'
-    : result.graph_score >= 50 ? 'bg-amber-50 border-amber-200'
-    : 'bg-[#F7F5F0] border-[#ECEAE4]'
+    ? result.graph_score >= 75 ? 'bg-[#EDF7F0]'
+    : result.graph_score >= 50 ? 'bg-[#FBF3E4]'
+    : 'bg-[#F1EFEA]'
     : ''
 
   if (done) {
     return (
-      <div className="flex items-center gap-2 px-4 py-3 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[12px] text-sm text-[#5A5750]">
-        <CheckCircle2 className="w-4 h-4 text-green-500" />
-        Graph processing complete. Document is indexed and searchable.
+      <div className="flex items-center gap-2 rounded-[12px] border border-[#DDD9D0] bg-white px-4 py-3 text-[13.5px] text-[#5A5750]">
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-[#16A34A]" strokeWidth={1.75} />
+        Done. The document is indexed and searchable.
       </div>
     )
   }
 
   return (
-    <div className="bg-white border border-[#DDD9D0] rounded-[16px] overflow-hidden shadow-sm">
+    <div className="overflow-hidden rounded-[12px] border border-[#DDD9D0] bg-white">
       {/* Header */}
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-[#ECEAE4] bg-gradient-to-r from-[#EBF0FF]/40 to-transparent">
-        <div className="w-8 h-8 bg-[#EBF0FF] rounded-[9px] flex items-center justify-center flex-shrink-0">
-          <Network className="w-4 h-4 text-[#1A3DAF]" />
-        </div>
-        <div className="flex-1">
-          <h3 className="font-semibold text-sm text-[#0E0D0A]">Knowledge Graph AI</h3>
-          <p className="text-[12px] text-[#9B9890]">
-            Should this document enrich your organizational knowledge graph?
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-[#ECEAE4] px-5 py-3.5">
+        <div className="min-w-0">
+          <h3 className="text-[14px] font-semibold text-[#0E0D0A]">Add to the knowledge map?</h3>
+          <p className="mt-0.5 text-[12.5px] text-[#8A877F]">
+            Avora can link the people, companies and contracts in this document to the rest of your records.
           </p>
         </div>
-        <div className="font-mono text-[10px] text-[#9B9890] bg-white border border-[#ECEAE4] px-2 py-0.5 rounded-full">
-          RAG indexing is always automatic
-        </div>
+        <span className="text-[12.5px] text-[#8A877F]">Search indexing happens either way</span>
       </div>
 
       <div className="px-5 py-4">
         {/* Pre-score state */}
         {!result && !scoring && (
-          <div className="text-center py-4">
-            <p className="text-sm text-[#5A5750] mb-4">
-              Let AI analyse <strong className="text-[#0E0D0A]">{docName}</strong> and decide if it belongs in the Knowledge Graph.
+          <div className="space-y-4">
+            <p className="text-[14px] text-[#5A5750]">
+              Avora will read <span className="font-medium text-[#0E0D0A]">{docName}</span> and suggest whether it’s worth adding.
             </p>
-            <div className="flex items-center justify-center gap-3">
-              <button onClick={runScore}
-                className="flex items-center gap-2 px-5 py-2.5 bg-[#0E0D0A] text-white rounded-[10px] text-sm font-medium hover:bg-[#252318] transition-colors">
-                <Sparkles className="w-4 h-4" /> Analyse with AI
-              </button>
-              <button onClick={handleSkip}
-                className="px-5 py-2.5 border border-[#DDD9D0] text-[#5A5750] rounded-[10px] text-sm font-medium hover:border-[#9B9890] transition-colors">
-                Skip
-              </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={runScore}>Analyse document</Button>
+              <Button variant="ghost" size="sm" onClick={handleSkip}>Skip</Button>
             </div>
           </div>
         )}
 
         {/* Scoring loading */}
         {scoring && (
-          <div className="flex items-center gap-3 py-6 justify-center text-[#5A5750]">
-            <Loader2 className="w-5 h-5 animate-spin text-[#1A3DAF]" />
-            <span className="text-sm">AI is extracting entities and computing graph score…</span>
+          <div className="flex items-center gap-2.5 py-4 text-[13.5px] text-[#5A5750]">
+            <Loader2 className="h-4 w-4 animate-spin text-[#8A877F]" />
+            <span>Finding names, companies and contracts in the document…</span>
           </div>
         )}
 
@@ -146,39 +136,39 @@ export default function GraphRecommendationCard({ documentId, docName, onDone }:
         {result && (
           <div className="space-y-4">
             {/* Score meter */}
-            <div className={`flex items-center gap-4 p-4 border rounded-[12px] ${scoreBg}`}>
-              <div className="text-center flex-shrink-0">
-                <div className={`font-display text-4xl font-black ${scoreColor}`}>
+            <div className={`flex flex-col gap-3 rounded-[8px] p-4 sm:flex-row sm:items-center sm:gap-5 ${scoreBg}`}>
+              <div className="shrink-0">
+                <div className={`font-display text-[34px] font-semibold leading-none tabular-nums ${scoreColor}`}>
                   {result.graph_score}
                 </div>
-                <div className="font-mono text-[10px] text-[#9B9890] uppercase tracking-wide">Graph Score</div>
+                <div className="mt-1 text-[12.5px] text-[#5A5750]">Relevance score</div>
               </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   {result.recommended
-                    ? <CheckCircle2 className="w-4 h-4 text-green-500" />
-                    : <AlertTriangle className="w-4 h-4 text-amber-500" />}
-                  <span className="font-semibold text-sm text-[#0E0D0A]">
+                    ? <CheckCircle2 className="h-4 w-4 text-[#16A34A]" strokeWidth={1.75} />
+                    : <AlertTriangle className="h-4 w-4 text-[#D97706]" strokeWidth={1.75} />}
+                  <span className="text-[14px] font-semibold text-[#0E0D0A]">
                     {result.document_type}
                   </span>
-                  <span className="font-mono text-[10px] text-[#9B9890]">
+                  <span className="text-[12.5px] tabular-nums text-[#8A877F]">
                     {Math.round(result.confidence * 100)}% confidence
                   </span>
                 </div>
-                <p className="text-[12.5px] text-[#5A5750] leading-relaxed">{result.reason}</p>
+                <p className="text-[13px] leading-relaxed text-[#2B2924]">{result.reason}</p>
               </div>
             </div>
 
             {/* Score bar */}
             <div>
-              <div className="flex justify-between text-[10px] font-mono text-[#9B9890] mb-1">
+              <div className="mb-1 flex justify-between text-[12px] text-[#8A877F]">
                 <span>Low value</span><span>High value</span>
               </div>
-              <div className="h-2 bg-[#ECEAE4] rounded-full overflow-hidden">
+              <div className="h-1.5 overflow-hidden rounded-full bg-[#F1EFEA]">
                 <div
                   className={`h-full rounded-full transition-all duration-700 ${
-                    result.graph_score >= 75 ? 'bg-green-500' :
-                    result.graph_score >= 50 ? 'bg-amber-500' : 'bg-[#DDD9D0]'
+                    result.graph_score >= 75 ? 'bg-[#16A34A]' :
+                    result.graph_score >= 50 ? 'bg-[#D97706]' : 'bg-[#BDB8AC]'
                   }`}
                   style={{ width: `${result.graph_score}%` }}
                 />
@@ -188,15 +178,15 @@ export default function GraphRecommendationCard({ documentId, docName, onDone }:
             {/* Detected entities */}
             {result.entities.length > 0 && (
               <div>
-                <p className="text-[11px] font-semibold text-[#0E0D0A] uppercase tracking-wide mb-2">
-                  Detected Entities ({result.entities.length})
+                <p className="mb-2 text-[13px] text-[#5A5750]">
+                  Found in this document <span className="tabular-nums text-[#8A877F]">· {result.entities.length}</span>
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {result.entities.map((e, i) => (
                     <span key={i}
-                      className={`flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full border ${TYPE_COLORS[e.type] || 'bg-[#F7F5F0] text-[#5A5750] border-[#ECEAE4]'}`}>
-                      ✓ {e.name}
-                      <span className="opacity-60 font-normal capitalize">· {e.type}</span>
+                      className={`inline-flex items-center gap-1 rounded-[5px] px-2 py-1 text-[12px] font-medium ${TYPE_COLORS[e.type] || 'bg-[#F1EFEA] text-[#5A5750]'}`}>
+                      {e.name}
+                      <span className="font-normal capitalize opacity-70">· {e.type}</span>
                     </span>
                   ))}
                 </div>
@@ -204,41 +194,31 @@ export default function GraphRecommendationCard({ documentId, docName, onDone }:
             )}
 
             {result.entities.length === 0 && !result.recommended && (
-              <div className="text-center py-2 text-sm text-[#9B9890]">
-                No business entities detected. This document will still be searchable through RAG.
-              </div>
+              <p className="text-[13px] text-[#8A877F]">
+                No companies, people or contracts found. The document is still searchable.
+              </p>
             )}
 
             {/* Action buttons */}
-            <div className="flex items-center gap-3 pt-2 border-t border-[#ECEAE4]">
+            <div className="flex flex-wrap items-center gap-2 border-t border-[#ECEAE4] pt-4">
               {result.recommended ? (
                 <>
-                  <button onClick={handleConfirm} disabled={confirming}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-[#0E0D0A] text-white rounded-[10px] text-sm font-medium hover:bg-[#252318] transition-colors disabled:opacity-50">
-                    {confirming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Network className="w-4 h-4" />}
-                    Add to Knowledge Graph
-                  </button>
-                  <button onClick={handleSkip}
-                    className="px-5 py-2.5 border border-[#DDD9D0] text-[#5A5750] rounded-[10px] text-sm font-medium hover:border-[#9B9890] transition-colors">
-                    Skip
-                  </button>
+                  <Button size="sm" onClick={handleConfirm} disabled={confirming}>
+                    {confirming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Network className="h-3.5 w-3.5" strokeWidth={1.75} />}
+                    Add to knowledge map
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={handleSkip}>Skip</Button>
                 </>
               ) : (
                 <>
-                  <button onClick={handleSkip}
-                    className="px-5 py-2.5 bg-[#F7F5F0] border border-[#ECEAE4] text-[#0E0D0A] rounded-[10px] text-sm font-medium hover:bg-[#ECEAE4] transition-colors">
-                    Continue without adding
-                  </button>
-                  <button onClick={handleConfirm} disabled={confirming}
-                    className="flex items-center gap-1.5 px-4 py-2.5 border border-[#DDD9D0] text-[#5A5750] rounded-[10px] text-sm hover:border-[#1A3DAF] hover:text-[#1A3DAF] transition-colors disabled:opacity-50">
-                    {confirming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Network className="w-3.5 h-3.5" />}
+                  <Button variant="ghost" size="sm" onClick={handleSkip}>Continue without adding</Button>
+                  <Button variant="plain" size="sm" onClick={handleConfirm} disabled={confirming}>
+                    {confirming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Network className="h-3.5 w-3.5" strokeWidth={1.75} />}
                     Add anyway
-                  </button>
+                  </Button>
                 </>
               )}
-              <span className="ml-auto font-mono text-[10px] text-[#9B9890]">
-                RAG indexing is already done ✓
-              </span>
+              <span className="text-[12.5px] text-[#8A877F] sm:ml-auto">Already searchable</span>
             </div>
           </div>
         )}

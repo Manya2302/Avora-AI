@@ -71,3 +71,5 @@ def get_timeout():
 cohere_embed_cb = CircuitBreaker("Cohere Embeddings", cooldown_seconds=get_timeout())
 cohere_rerank_cb = CircuitBreaker("Cohere Reranker", cooldown_seconds=get_timeout())
 groq_cb = CircuitBreaker("Groq", cooldown_seconds=get_timeout())
+vision_cb = CircuitBreaker("Vision VLM", max_failures=5, cooldown_seconds=get_timeout())
+ollama_embed_cb = CircuitBreaker("Ollama Embeddings", max_failures=3, cooldown_seconds=120)

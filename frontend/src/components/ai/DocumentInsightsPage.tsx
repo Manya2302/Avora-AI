@@ -6,14 +6,16 @@ import { aiApi } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
 import Button from '@/components/shared/Button'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
 import type { DocumentInsight } from '@/types'
 
 const CONF_VARIANT: Record<string, any> = { public:'green', internal:'blue', confidential:'amber', restricted:'red' }
 const CATEGORY_LABEL: Record<string, string> = {
-  invoice:'Invoice', contract:'Contract', tax_filing:'Tax Filing', medical_record:'Medical Record',
-  bank_statement:'Bank Statement', legal_agreement:'Legal Agreement', insurance_policy:'Insurance Policy',
-  audit_report:'Audit Report', certificate:'Certificate', purchase_order:'Purchase Order',
-  employee_record:'Employee Record', vendor_agreement:'Vendor Agreement', compliance_report:'Compliance Report', other:'Other',
+  invoice:'Invoice', contract:'Contract', tax_filing:'Tax filing', medical_record:'Medical record',
+  bank_statement:'Bank statement', legal_agreement:'Legal agreement', insurance_policy:'Insurance policy',
+  audit_report:'Audit report', certificate:'Certificate', purchase_order:'Purchase order',
+  employee_record:'Employee record', vendor_agreement:'Vendor agreement', compliance_report:'Compliance report', other:'Other',
 }
 
 const STAGES = ['queued','ocr','text_extraction','text_cleaning','classification','metadata','summary','embedding','storing','completed']
@@ -38,8 +40,10 @@ export default function DocumentInsightsPage({ documentId }: { documentId: strin
   }
 
   if (loading) return (
-    <div className="flex items-center justify-center h-72">
-      <div className="text-center"><div className="w-8 h-8 border-2 border-[#EBF0FF] border-t-[#1A3DAF] rounded-full animate-spin mx-auto mb-3" /><p className="text-sm text-[#9B9890]">Loading Avora insights…</p></div>
+    <div className="space-y-6">
+      <div className="h-8 w-56 animate-pulse rounded-[6px] bg-[#F1EFEA]" />
+      <Card><div className="space-y-3 p-5">{[0, 1, 2].map(i => <div key={i} className="h-10 animate-pulse rounded-[6px] bg-[#F1EFEA]" />)}</div></Card>
+      <p className="text-[13px] text-[#8A877F]">Loading insights…</p>
     </div>
   )
 
@@ -48,107 +52,105 @@ export default function DocumentInsightsPage({ documentId }: { documentId: strin
   const pct      = pipeline ? pipeline.progress : 0
   const tabs = [
     { key: 'overview',  label: 'Overview',  icon: Brain },
-    { key: 'summary',   label: 'AI Summary',icon: Sparkles },
+    { key: 'summary',   label: 'Summary',   icon: Sparkles },
     { key: 'metadata',  label: 'Metadata',  icon: FileText },
     { key: 'relations', label: 'Relations', icon: Link2 },
   ]
 
   return (
-    <div className="space-y-5 max-w-5xl">
-      <button onClick={() => router.back()} className="flex items-center gap-2 text-sm text-[#9B9890] hover:text-[#0E0D0A] transition-colors">
-        <ArrowLeft className="w-4 h-4" /> Back to Document
+    <div className="max-w-5xl space-y-6">
+      <button onClick={() => router.back()} className="inline-flex items-center gap-1.5 text-[13px] text-[#8A877F] transition-colors hover:text-[#0E0D0A]">
+        <ArrowLeft className="h-4 w-4" strokeWidth={1.75} /> Back to document
       </button>
 
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#EBF0FF] rounded-[11px] flex items-center justify-center"><Sparkles className="w-5 h-5 text-[#1A3DAF]" /></div>
-          <div>
-            <h2 className="font-display text-2xl font-bold tracking-tight text-[#0E0D0A]">Avora Insights</h2>
-            <p className="text-sm font-light text-[#9B9890] font-mono">{documentId.slice(0,8)}…</p>
-          </div>
-        </div>
-        {pipeline?.stage === 'failed' && <Button variant="red" size="sm" loading={retrigger} onClick={handleRetrigger}><AlertTriangle className="w-3.5 h-3.5" /> Retrigger Pipeline</Button>}
-      </div>
+      <PageHeader
+        className="!mt-3"
+        title="Document insights"
+        description={<>What Avora extracted from this document · <span className="font-mono text-[13px]">{documentId.slice(0,8)}…</span></>}
+        actions={pipeline?.stage === 'failed' && <Button variant="red" size="sm" loading={retrigger} onClick={handleRetrigger}><AlertTriangle className="h-3.5 w-3.5" strokeWidth={1.75} /> Run processing again</Button>}
+      />
 
       {/* Pipeline progress */}
       {pipeline && pipeline.stage !== 'completed' && (
-        <div className="bg-white border border-[#DDD9D0] rounded-[14px] p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-semibold text-[#0E0D0A]">Processing Pipeline</span>
-            <span className={`font-mono text-[10px] font-semibold px-2.5 py-1 rounded-full border ${pipeline.stage === 'failed' ? 'bg-red-50 text-red-600 border-red-100' : 'bg-[#EBF0FF] text-[#1A3DAF] border-[#1A3DAF]/15'}`}>
-              {pipeline.stage.replace('_',' ')} · {pct}%
-            </span>
-          </div>
-          <div className="h-2 bg-[#ECEAE4] rounded-full overflow-hidden mb-3">
-            <div className={`h-full rounded-full transition-all duration-500 ${pipeline.stage === 'failed' ? 'bg-red-500' : 'bg-[#1A3DAF]'}`} style={{ width: `${pct}%` }} />
-          </div>
-          <div className="flex gap-1 flex-wrap">
-            {STAGES.slice(0,-1).map((s, i) => (
-              <div key={s} className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${i < stageIdx ? 'bg-green-50 text-green-600 border-green-100' : i === stageIdx ? 'bg-[#EBF0FF] text-[#1A3DAF] border-[#1A3DAF]/15' : 'bg-[#F7F5F0] text-[#9B9890] border-[#ECEAE4]'}`}>
-                {s.replace('_',' ')}
-              </div>
-            ))}
-          </div>
-        </div>
+        <Card>
+          <CardHeader
+            title="Processing"
+            subtitle={pipeline.stage === 'failed' ? 'Processing stopped before it finished.' : 'Insights fill in as each step completes.'}
+            action={<Badge variant={pipeline.stage === 'failed' ? 'red' : 'blue'}>{pipeline.stage.replace('_',' ')} · {pct}%</Badge>}
+          />
+          <CardBody className="space-y-3">
+            <div className="h-1.5 overflow-hidden rounded-full bg-[#F1EFEA]">
+              <div className={`h-full rounded-full transition-all duration-500 ${pipeline.stage === 'failed' ? 'bg-[#DC2626]' : 'bg-[#1A3DAF]'}`} style={{ width: `${pct}%` }} />
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {STAGES.slice(0,-1).map((s, i) => (
+                <span key={s} className={`inline-flex items-center gap-1.5 text-[12.5px] ${i < stageIdx ? 'text-[#5A5750]' : i === stageIdx ? 'font-medium text-[#0E0D0A]' : 'text-[#8A877F]'}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${i < stageIdx ? 'bg-[#16A34A]' : i === stageIdx ? 'bg-[#1A3DAF]' : 'bg-[#DDD9D0]'}`} />
+                  {s.replace('_',' ')}
+                </span>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[11px] p-1">
+      <div className="flex gap-6 overflow-x-auto border-b border-[#DDD9D0]" role="tablist">
         {tabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key as any)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-[8px] text-[13px] font-medium flex-1 justify-center transition-all ${tab === t.key ? 'bg-white text-[#0E0D0A] shadow-sm' : 'text-[#9B9890] hover:text-[#5A5750]'}`}>
-            <t.icon className="w-3.5 h-3.5" /> {t.label}
+          <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key as any)}
+            className={`-mb-px flex shrink-0 items-center gap-2 border-b-2 pb-2.5 text-[14px] transition-colors ${tab === t.key ? 'border-[#0E0D0A] font-medium text-[#0E0D0A]' : 'border-transparent text-[#8A877F] hover:text-[#2B2924]'}`}>
+            {t.label}
           </button>
         ))}
       </div>
 
       {/* Overview */}
       {tab === 'overview' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <Card>
-            <CardHeader title="Classification" action={insight?.classification && <Badge variant="green">{Math.round(insight.classification.confidence * 100)}%</Badge>} />
-            <CardBody className="space-y-3">
+            <CardHeader title="Classification" action={insight?.classification && <span className="text-[12.5px] tabular-nums text-[#8A877F]">{Math.round(insight.classification.confidence * 100)}% confident</span>} />
+            <CardBody className="space-y-4">
               {insight?.classification ? (<>
-                <div className="text-center py-3">
-                  <div className="font-display text-2xl font-bold text-[#0E0D0A] mb-1">{CATEGORY_LABEL[insight.classification.category] || insight.classification.category}</div>
-                  <Badge variant={CONF_VARIANT[insight.classification.confidentiality]}>{insight.classification.confidentiality}</Badge>
+                <div>
+                  <div className="font-display text-[24px] font-semibold leading-tight text-[#0E0D0A]">{CATEGORY_LABEL[insight.classification.category] || insight.classification.category}</div>
+                  <div className="mt-2"><Badge variant={CONF_VARIANT[insight.classification.confidentiality]}>{insight.classification.confidentiality}</Badge></div>
                 </div>
-                <div className="flex items-center justify-between p-2.5 bg-[#F7F5F0] rounded-[8px]">
-                  <span className="text-xs text-[#5A5750]">Risk Score</span>
+                <div className="flex items-center justify-between gap-3 border-t border-[#F1EFEA] pt-3">
+                  <span className="text-[13px] text-[#5A5750]">Risk score</span>
                   <div className="flex items-center gap-2">
-                    <div className="w-16 h-1.5 bg-[#ECEAE4] rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${insight.classification.risk_score > 0.7 ? 'bg-red-500' : insight.classification.risk_score > 0.4 ? 'bg-amber-400' : 'bg-green-500'}`} style={{ width: `${insight.classification.risk_score * 100}%` }} />
+                    <div className="h-1.5 w-16 overflow-hidden rounded-full bg-[#F1EFEA]">
+                      <div className={`h-full rounded-full ${insight.classification.risk_score > 0.7 ? 'bg-[#DC2626]' : insight.classification.risk_score > 0.4 ? 'bg-[#D97706]' : 'bg-[#16A34A]'}`} style={{ width: `${insight.classification.risk_score * 100}%` }} />
                     </div>
-                    <span className="font-mono text-[11px] text-[#0E0D0A] font-semibold">{Math.round(insight.classification.risk_score * 100)}%</span>
+                    <span className="text-[13px] font-medium tabular-nums text-[#0E0D0A]">{Math.round(insight.classification.risk_score * 100)}%</span>
                   </div>
                 </div>
-              </>) : <p className="text-sm text-[#9B9890] text-center py-4">Not yet classified</p>}
+              </>) : <p className="py-4 text-center text-[13px] text-[#8A877F]">Not classified yet.</p>}
             </CardBody>
           </Card>
 
           <Card>
-            <CardHeader title="OCR Extraction" />
+            <CardHeader title="Text extraction" />
             <CardBody className="space-y-2.5">
               {insight?.ocr ? (<>
-                <div className="flex items-center justify-between"><span className="text-xs text-[#5A5750]">Status</span><Badge variant={insight.ocr.status === 'completed' ? 'green' : 'amber'}>{insight.ocr.status}</Badge></div>
-                <div className="flex items-center justify-between"><span className="text-xs text-[#5A5750]">Confidence</span><span className="font-mono text-xs font-semibold text-[#0E0D0A]">{Math.round(insight.ocr.confidence * 100)}%</span></div>
-                <div className="flex items-center justify-between"><span className="text-xs text-[#5A5750]">Pages</span><span className="font-mono text-xs text-[#0E0D0A]">{insight.ocr.page_count}</span></div>
-                <div className="flex items-center justify-between"><span className="text-xs text-[#5A5750]">Words</span><span className="font-mono text-xs text-[#0E0D0A]">{insight.ocr.word_count?.toLocaleString()}</span></div>
-                <div className="flex items-center justify-between"><span className="text-xs text-[#5A5750]">Engine</span><span className="font-mono text-[10px] text-[#1A3DAF] bg-[#EBF0FF] px-1.5 py-0.5 rounded">{insight.ocr.engine}</span></div>
-              </>) : <p className="text-sm text-[#9B9890] text-center py-4">Not yet processed</p>}
+                <div className="flex items-center justify-between gap-3"><span className="text-[13px] text-[#5A5750]">Status</span><Badge variant={insight.ocr.status === 'completed' ? 'green' : 'amber'}>{insight.ocr.status}</Badge></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-[13px] text-[#5A5750]">Confidence</span><span className="text-[13px] font-medium tabular-nums text-[#0E0D0A]">{Math.round(insight.ocr.confidence * 100)}%</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-[13px] text-[#5A5750]">Pages</span><span className="text-[13px] tabular-nums text-[#0E0D0A]">{insight.ocr.page_count}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-[13px] text-[#5A5750]">Words</span><span className="text-[13px] tabular-nums text-[#0E0D0A]">{insight.ocr.word_count?.toLocaleString()}</span></div>
+                <div className="flex items-center justify-between gap-3"><span className="text-[13px] text-[#5A5750]">Engine</span><span className="font-mono text-[12px] text-[#5A5750]">{insight.ocr.engine}</span></div>
+              </>) : <p className="py-4 text-center text-[13px] text-[#8A877F]">Not processed yet.</p>}
             </CardBody>
           </Card>
 
           <Card>
-            <CardHeader title="Tags" action={<span className="font-mono text-[10px] text-[#9B9890]">{insight?.tags?.length || 0} tags</span>} />
+            <CardHeader title="Tags" action={<span className="text-[12.5px] tabular-nums text-[#8A877F]">{insight?.tags?.length || 0}</span>} />
             <CardBody>
               {insight?.tags && insight.tags.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-1.5">
                   {insight.tags.map(t => (
-                    <span key={t.tag} className="font-mono text-[10.5px] font-medium px-2.5 py-1 rounded-full bg-[#F7F5F0] border border-[#ECEAE4] text-[#5A5750]">{t.tag}</span>
+                    <Badge key={t.tag} variant="gray" className="px-2 py-1 text-[12px] font-normal">{t.tag}</Badge>
                   ))}
                 </div>
-              ) : <p className="text-sm text-[#9B9890] text-center py-4">No tags generated yet</p>}
+              ) : <p className="py-4 text-center text-[13px] text-[#8A877F]">No tags yet.</p>}
             </CardBody>
           </Card>
         </div>
@@ -159,38 +161,36 @@ export default function DocumentInsightsPage({ documentId }: { documentId: strin
         <div className="space-y-4">
           {insight?.summary ? (<>
             <Card>
-              <CardHeader title="Short Summary" action={<Sparkles className="w-4 h-4 text-[#1A3DAF]" />} />
+              <CardHeader title="In brief" />
               <CardBody>
-                <div className="p-4 bg-[#EBF0FF] border border-[#1A3DAF]/12 rounded-[11px]">
-                  <p className="text-[14.5px] font-medium text-[#0E0D0A] leading-relaxed">{insight.summary.short || 'Not generated yet.'}</p>
-                </div>
+                <p className="text-[15px] leading-relaxed text-[#0E0D0A]">{insight.summary.short || 'Not generated yet.'}</p>
               </CardBody>
             </Card>
             <Card>
-              <CardHeader title="Detailed Analysis" />
-              <CardBody><p className="text-[13.5px] font-light text-[#5A5750] leading-[1.75] whitespace-pre-wrap">{insight.summary.medium || insight.summary.long || 'Not generated yet.'}</p></CardBody>
+              <CardHeader title="Detailed summary" />
+              <CardBody><p className="whitespace-pre-wrap text-[14px] leading-[1.7] text-[#2B2924]">{insight.summary.medium || insight.summary.long || 'Not generated yet.'}</p></CardBody>
             </Card>
             {insight.summary.key_points?.length > 0 && (
               <Card>
-                <CardHeader title="Key Points" action={<Lightbulb className="w-4 h-4 text-amber-500" />} />
+                <CardHeader title="Key points" />
                 <CardBody>
-                  <ul className="space-y-2.5">
+                  <ol className="space-y-2.5">
                     {insight.summary.key_points.map((p, i) => (
-                      <li key={i} className="flex items-start gap-2.5 text-sm text-[#5A5750]">
-                        <div className="w-5 h-5 rounded-full bg-amber-50 border border-amber-100 flex items-center justify-center font-mono text-[9px] font-bold text-amber-700 flex-shrink-0 mt-0.5">{i+1}</div>
-                        {p}
+                      <li key={i} className="flex items-start gap-3 text-[14px] text-[#2B2924]">
+                        <span className="mt-px w-5 shrink-0 text-right text-[13px] tabular-nums text-[#8A877F]">{i+1}.</span>
+                        <span className="min-w-0">{p}</span>
                       </li>
                     ))}
-                  </ul>
+                  </ol>
                 </CardBody>
               </Card>
             )}
           </>) : (
-            <div className="text-center py-16 bg-white border border-[#DDD9D0] rounded-[16px]">
-              <Sparkles className="w-10 h-10 text-[#DDD9D0] mx-auto mb-3" />
-              <p className="font-medium text-[#5A5750]">Summary not yet generated</p>
-              <p className="text-xs text-[#9B9890] mt-1">Avora will generate a summary once document processing is complete.</p>
-            </div>
+            <Card>
+              <EmptyState icon={<Sparkles />} title="No summary yet">
+                Avora writes a summary once it has finished processing the document.
+              </EmptyState>
+            </Card>
           )}
         </div>
       )}
@@ -198,10 +198,10 @@ export default function DocumentInsightsPage({ documentId }: { documentId: strin
       {/* Metadata */}
       {tab === 'metadata' && (
         <Card>
-          <CardHeader title="Extracted Metadata" action={<span className="font-mono text-[9.5px] text-[#1A3DAF] bg-[#EBF0FF] px-2 py-0.5 rounded-full">AI Extracted</span>} />
-          <CardBody>
-            {insight?.metadata ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardHeader title="Extracted details" subtitle="Pulled from the document text by Avora. Check them before relying on them." />
+          {insight?.metadata ? (
+            <div>
+              <dl>
                 {[
                   { label:'Vendor',     value: insight.metadata.vendor },
                   { label:'Client',     value: insight.metadata.client },
@@ -210,22 +210,22 @@ export default function DocumentInsightsPage({ documentId }: { documentId: strin
                   { label:'Amount',     value: insight.metadata.amount ? `${insight.metadata.currency} ${insight.metadata.amount}` : '' },
                   { label:'Country',    value: insight.metadata.country },
                 ].filter(f => f.value).map(f => (
-                  <div key={f.label} className="flex items-center justify-between p-3 bg-[#F7F5F0] rounded-[9px] border border-[#ECEAE4]">
-                    <span className="text-xs font-semibold text-[#9B9890] uppercase tracking-[0.5px]">{f.label}</span>
-                    <span className="text-sm font-medium text-[#0E0D0A]">{f.value}</span>
+                  <div key={f.label} className="flex items-center justify-between gap-4 border-t border-[#F1EFEA] px-5 py-3 first:border-0">
+                    <dt className="text-[13px] text-[#8A877F]">{f.label}</dt>
+                    <dd className="min-w-0 truncate text-[14px] font-medium text-[#0E0D0A]">{f.value}</dd>
                   </div>
                 ))}
-                {insight.metadata.keywords?.length > 0 && (
-                  <div className="md:col-span-2 p-3 bg-[#F7F5F0] rounded-[9px] border border-[#ECEAE4]">
-                    <span className="text-xs font-semibold text-[#9B9890] uppercase tracking-[0.5px] block mb-2">Keywords</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {insight.metadata.keywords.map(k => <span key={k} className="font-mono text-[10px] px-2 py-0.5 bg-white border border-[#DDD9D0] rounded-full text-[#5A5750]">{k}</span>)}
-                    </div>
+              </dl>
+              {insight.metadata.keywords?.length > 0 && (
+                <div className="border-t border-[#F1EFEA] px-5 py-3">
+                  <span className="mb-2 block text-[13px] text-[#8A877F]">Keywords</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {insight.metadata.keywords.map(k => <Badge key={k} variant="gray" className="px-2 py-1 text-[12px] font-normal">{k}</Badge>)}
                   </div>
-                )}
-              </div>
-            ) : <p className="text-sm text-[#9B9890] text-center py-8">No metadata extracted yet.</p>}
-          </CardBody>
+                </div>
+              )}
+            </div>
+          ) : <p className="py-8 text-center text-[13px] text-[#8A877F]">No details extracted yet.</p>}
         </Card>
       )}
 
@@ -233,39 +233,41 @@ export default function DocumentInsightsPage({ documentId }: { documentId: strin
       {tab === 'relations' && (
         <div className="space-y-4">
           <Card>
-            <CardHeader title="Document Relationships" action={<span className="font-mono text-[10px] text-[#9B9890]">{insight?.relationships?.length || 0} found</span>} />
+            <CardHeader title="Related documents" action={<span className="text-[12.5px] tabular-nums text-[#8A877F]">{insight?.relationships?.length || 0} found</span>} />
             <div>
               {insight?.relationships && insight.relationships.length > 0 ? insight.relationships.map(r => (
-                <div key={r.target_document_id} onClick={() => router.push(`/documents/${r.target_document_id}`)}
-                  className="flex items-center gap-3 px-5 py-3.5 border-b border-[#ECEAE4] last:border-0 hover:bg-[#F7F5F0] cursor-pointer">
-                  <Link2 className="w-4 h-4 text-[#9B9890] flex-shrink-0" />
-                  <div className="flex-1">
-                    <div className="text-sm font-medium text-[#0E0D0A]">{r.target_document_id.toString().slice(0,8)}…</div>
-                    <div className="text-xs text-[#9B9890]">{r.relationship_type.replace('_',' ')} · {Math.round(r.similarity_score * 100)}% similar</div>
+                <button key={r.target_document_id} onClick={() => router.push(`/documents/${r.target_document_id}`)}
+                  className="flex w-full items-center gap-3 border-t border-[#F1EFEA] px-5 py-3 text-left first:border-0 hover:bg-[#FBFAF7]">
+                  <Link2 className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-mono text-[13px] text-[#0E0D0A]">{r.target_document_id.toString().slice(0,8)}…</div>
+                    <div className="text-[12.5px] text-[#8A877F]">{r.relationship_type.replace('_',' ')} · {Math.round(r.similarity_score * 100)}% similar</div>
                   </div>
-                  <Badge variant={r.similarity_score > 0.95 ? 'red' : r.similarity_score > 0.88 ? 'amber' : 'blue'}>
+                  <Badge variant={r.similarity_score > 0.95 ? 'red' : r.similarity_score > 0.88 ? 'amber' : 'gray'}>
                     {r.similarity_score > 0.95 ? 'Duplicate' : r.similarity_score > 0.88 ? 'Revision' : 'Related'}
                   </Badge>
-                </div>
+                </button>
               )) : (
-                <div className="p-10 text-center text-sm text-[#9B9890]">No related documents found yet.</div>
+                <EmptyState icon={<Link2 />} title="No related documents yet">
+                  Avora links documents that look like duplicates, revisions or close matches.
+                </EmptyState>
               )}
             </div>
           </Card>
           {insight?.recommendations && insight.recommendations.length > 0 && (
             <Card>
-              <CardHeader title="Recommendations" action={<Lightbulb className="w-4 h-4 text-amber-500" />} />
+              <CardHeader title="Worth a look" subtitle="Other documents Avora thinks are relevant to this one." />
               <div>
                 {insight.recommendations.map(r => (
-                  <div key={r.recommended_document_id} onClick={() => router.push(`/documents/${r.recommended_document_id}`)}
-                    className="flex items-center gap-3 px-5 py-3.5 border-b border-[#ECEAE4] last:border-0 hover:bg-[#F7F5F0] cursor-pointer">
-                    <FileText className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                    <div className="flex-1">
-                      <div className="text-sm font-medium text-[#0E0D0A]">{r.recommended_document_id.toString().slice(0,8)}…</div>
-                      <div className="text-xs text-[#9B9890]">{r.reason}</div>
+                  <button key={r.recommended_document_id} onClick={() => router.push(`/documents/${r.recommended_document_id}`)}
+                    className="flex w-full items-center gap-3 border-t border-[#F1EFEA] px-5 py-3 text-left first:border-0 hover:bg-[#FBFAF7]">
+                    <FileText className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono text-[13px] text-[#0E0D0A]">{r.recommended_document_id.toString().slice(0,8)}…</div>
+                      <div className="text-[12.5px] text-[#8A877F]">{r.reason}</div>
                     </div>
-                    <span className="font-mono text-[10px] text-[#5A5750]">{r.score}%</span>
-                  </div>
+                    <span className="text-[12.5px] tabular-nums text-[#5A5750]">{r.score}%</span>
+                  </button>
                 ))}
               </div>
             </Card>

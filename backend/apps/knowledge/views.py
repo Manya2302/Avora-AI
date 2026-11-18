@@ -3,6 +3,16 @@ from rest_framework.response import Response
 from rest_framework import generics
 from .models import KnowledgeNode, KnowledgeRelationship
 
+MAX_GRAPH_ENTITIES = 60
+
+
+def _owns(request, document_id) -> bool:
+    from apps.documents.models import Document
+    try:
+        return Document.objects.filter(id=document_id, owner=request.user, is_deleted=False).exists()
+    except Exception:  # malformed UUID
+        return False
+
 
 class KnowledgeGraphView(APIView):
     """GET /api/knowledge/graph/ — permission-filtered graph data"""
@@ -54,14 +64,13 @@ class GraphScoreView(APIView):
         doc_name    = request.data.get('doc_name', 'Untitled')
         text        = request.data.get('text', '')
 
-        if not text:
-            # Try to load OCR text from DB
-            try:
-                from apps.ai.models import DocumentOCR
-                ocr = DocumentOCR.objects.get(document_id=document_id)
-                text = ocr.cleaned_text or ocr.raw_text or ''
-            except Exception:
-                text = ''
+        if document_id and not _owns(request, document_id):
+            return Response({'error': 'Document not found.'}, status=404)
+        if not text and document_id:
+            from apps.ai.models import DocumentOCR
+            ocr = DocumentOCR.objects.filter(document_id=document_id).only('cleaned_text', 'raw_text').first()
+            text = (ocr.cleaned_text or ocr.raw_text or '') if ocr else ''
+        text = str(text)[:20000]
 
         if not text:
             return Response({'error': 'No text available to score.'}, status=400)
@@ -78,8 +87,14 @@ class GraphConfirmView(APIView):
         doc_name     = request.data.get('doc_name', 'Untitled')
         score_result = request.data.get('score_result', {})
 
-        if not document_id or not score_result:
+        if not document_id or not isinstance(score_result, dict) or not score_result:
             return Response({'error': 'document_id and score_result are required.'}, status=400)
+        if not _owns(request, document_id):
+            return Response({'error': 'Document not found.'}, status=404)
+        # Client-supplied graph content: bound its size so one request can't flood the graph
+        for key in ('entities', 'relationships'):
+            if isinstance(score_result.get(key), list):
+                score_result[key] = score_result[key][:MAX_GRAPH_ENTITIES]
 
         from .services.graph_scorer import build_graph_from_score_result
         result = build_graph_from_score_result(

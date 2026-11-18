@@ -15,97 +15,115 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 
-def get_accessible_document_ids(user) -> set:
-    """
-    Returns a set of document UUIDs (as strings) that `user` is allowed to access.
+ACL_CACHE_TTL = 300
+_ACL_VERSION_KEY = "acl:version"
 
-    Permission rules evaluated in order:
-      1. Owner always has access.
-      2. visibility = organization  → all users
-      3. visibility = department    → owner's department members + upward hierarchy
-      4. visibility = user_share    → allowed_users
-      5. visibility = custom        → union of allowed_users + allowed_departments + allowed_roles
-      6. visibility = private       → owner only
-      7. inherit_upward = True      → managers above the owner in the hierarchy also gain access
+
+def _acl_version() -> int:
+    from django.core.cache import cache
+    v = cache.get(_ACL_VERSION_KEY)
+    if v is None:
+        v = 1
+        cache.set(_ACL_VERSION_KEY, v, None)
+    return v
+
+
+def bump_acl_version(*args, **kwargs):
+    """Invalidate every cached ACL (called by signals on visibility/membership/role changes)."""
+    from django.core.cache import cache
+    try:
+        cache.incr(_ACL_VERSION_KEY)
+    except ValueError:
+        cache.set(_ACL_VERSION_KEY, 2, None)
+
+
+def _visibility_grants(user) -> set:
     """
+    Document ids granted through DocumentVisibility rules. Same rules as before,
+    but evaluated as a handful of indexed queries instead of a Python loop over
+    every visibility row in the database with 3-4 queries per row.
+
+      1. Owner                                   (handled by caller via Document.owner too)
+      2. visibility = organization               → everyone
+      3. visibility = department                 → members of allowed_departments
+      4. visibility = user_share                 → allowed_users
+      5. visibility = custom                     → allowed_users ∪ allowed_departments ∪ allowed_roles
+      6. visibility = private                    → owner only
+      7. inherit_upward & requester level ≤ 3:
+           same department, requester ranks above the owner  → granted
+           requester level ≤ 2 (MD/CEO), owner in another dept → granted
+    """
+    from django.db.models import Q
     from apps.organizations.models import DocumentVisibility, OrgMember
 
-    try:
-        member = OrgMember.objects.select_related('department', 'role').get(user=user)
-        user_dept = member.department
-        user_role = member.role
-        user_level = member.role.level if member.role else 99
-    except OrgMember.DoesNotExist:
-        member = None
-        user_dept = None
-        user_role = None
-        user_level = 99
+    L = DocumentVisibility.Level
+    from .tenancy import get_user_org_id
+    org_id = get_user_org_id(user)
+    member = OrgMember.objects.select_related('department', 'role').filter(user=user).first()
+    dept = member.department if member else None
+    role = member.role if member else None
+    level = role.level if role else 99
 
-    accessible = set()
-    user_id_str = str(user.id)
+    # "Organization" visibility = members of the OWNER's organization (tenant boundary),
+    # not every account in the system.
+    q = Q(owner_id=user.id) | Q(visibility=L.ORGANIZATION, owner__org_member__organization_id=org_id)
+    q |= Q(visibility__in=[L.USER_SHARE, L.CUSTOM], allowed_users=user)
+    if dept:
+        q |= Q(visibility__in=[L.DEPARTMENT, L.CUSTOM], allowed_departments=dept)
+    if role:
+        q |= Q(visibility=L.CUSTOM, allowed_roles=role)
+    ids = set(DocumentVisibility.objects.filter(q).values_list('document_id', flat=True).distinct())
 
-    for vis in DocumentVisibility.objects.prefetch_related(
-        'allowed_users', 'allowed_departments', 'allowed_roles', 'owner'
-    ).all():
-        doc_id = str(vis.document_id)
-        granted = False
+    if member and level <= 3:
+        lower_ranked = Q(role__isnull=True) | Q(role__level__gt=level)
+        owners = OrgMember.objects.none()
+        if dept:
+            owners = OrgMember.objects.filter(Q(department=dept) & lower_ranked)
+        if level <= 2:
+            # MD/CEO inherit across departments — of their own organization only
+            in_org = OrgMember.objects.filter(organization_id=org_id)
+            other = in_org.exclude(department=dept) if dept else in_org
+            owners = owners | other
+        owner_ids = owners.values_list('user_id', flat=True)
+        ids |= set(DocumentVisibility.objects.filter(inherit_upward=True, owner_id__in=owner_ids)
+                   .values_list('document_id', flat=True))
+    return {str(i) for i in ids}
 
-        # 1. Owner always has access
-        if str(vis.owner_id) == user_id_str:
-            granted = True
 
-        # 2. Organization-wide
-        elif vis.visibility == DocumentVisibility.Level.ORGANIZATION:
-            granted = True
+def get_accessible_document_ids(user, use_cache: bool = True) -> set:
+    """
+    Returns the set of document UUIDs (strings) `user` may access: documents they
+    own + everything granted by DocumentVisibility rules, minus deleted documents.
+    Visibility grants are cached per user and invalidated on any policy change.
+    """
+    from django.core.cache import cache
+    from apps.documents.models import Document
 
-        # 3. Department visibility
-        elif vis.visibility == DocumentVisibility.Level.DEPARTMENT:
-            if user_dept and vis.allowed_departments.filter(id=user_dept.id).exists():
-                granted = True
+    key = f"acl:{_acl_version()}:{user.id}"
+    grants = cache.get(key) if use_cache else None
+    if grants is None:
+        try:
+            grants = _visibility_grants(user)
+        except Exception as e:
+            logger.error(f"[Permission] grant evaluation failed for {user.id}: {e}")
+            grants = set()
+        if use_cache:
+            cache.set(key, grants, ACL_CACHE_TTL)
 
-        # 4. User-share
-        elif vis.visibility == DocumentVisibility.Level.USER_SHARE:
-            if vis.allowed_users.filter(id=user.id).exists():
-                granted = True
-
-        # 5. Custom
-        elif vis.visibility == DocumentVisibility.Level.CUSTOM:
-            if vis.allowed_users.filter(id=user.id).exists():
-                granted = True
-            if not granted and user_dept and vis.allowed_departments.filter(id=user_dept.id).exists():
-                granted = True
-            if not granted and user_role and vis.allowed_roles.filter(id=user_role.id).exists():
-                granted = True
-
-        # 6. Private — no additional grants
-
-        # 7. Upward inheritance: if the requester is a manager/senior
-        #    above the document owner, they may also see it.
-        if not granted and vis.inherit_upward and member and user_level <= 3:
-            # Level ≤3 means senior leadership (MD, CEO, Director)
-            # They can see all department documents below them
-            try:
-                owner_member = OrgMember.objects.select_related('department', 'role').get(user=vis.owner)
-                if owner_member.department and user_dept == owner_member.department:
-                    # same department, requester is at a higher level
-                    if user_level < (owner_member.role.level if owner_member.role else 99):
-                        granted = True
-                elif user_level <= 2:
-                    # Level 1-2 (MD/CEO) see everything with upward inheritance
-                    granted = True
-            except OrgMember.DoesNotExist:
-                pass
-
-        if granted:
-            accessible.add(doc_id)
-
-    logger.debug(f"[Permission] User {user.email} → {len(accessible)} accessible documents")
+    owned = {str(i) for i in Document.objects.filter(owner=user, is_deleted=False).values_list('id', flat=True)}
+    others = list(grants - owned)
+    live = set()
+    for i in range(0, len(others), 900):  # stay under SQLite's bound-parameter limit
+        live |= {str(x) for x in Document.objects.filter(id__in=others[i:i + 900], is_deleted=False)
+                 .values_list('id', flat=True)}
+    accessible = owned | live
+    logger.debug(f"[Permission] User {user.id} → {len(accessible)} accessible documents")
     return accessible
 
 
 def can_access_document(user, document_id: str) -> bool:
     """Quick check: can this user access one specific document?"""
-    return document_id in get_accessible_document_ids(user)
+    return str(document_id) in get_accessible_document_ids(user)
 
 
 def get_qdrant_filter_for_user(user) -> dict | None:

@@ -9,6 +9,8 @@ import { Eye, EyeOff } from 'lucide-react'
 import { authApi } from '@/lib/api'
 import Input from '@/components/shared/Input'
 import Button from '@/components/shared/Button'
+import Logo from '@/components/shared/Logo'
+import Link from 'next/link'
 
 const schema = z.object({
   new_password: z.string().min(8),
@@ -22,34 +24,45 @@ export default function ResetPasswordPage() {
   const otp    = params.get('otp') || ''
   const [loading, setLoading] = useState(false)
   const [showPw, setShowPw] = useState(false)
-  const { register, handleSubmit, formState: { errors } } = useForm({ resolver: zodResolver(schema) })
+  const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof schema>>({ resolver: zodResolver(schema) })
 
   const onSubmit = async (data: any) => {
     setLoading(true)
     try {
       await authApi.resetPassword({ email, otp_code: otp, ...data })
-      toast.success('Password reset! Signing you in…')
+      toast.success('Password updated. Sign in with your new password.')
       router.push('/login')
     } catch { toast.error('Reset failed. Try again.') }
     finally { setLoading(false) }
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#F7F5F0] p-6">
-      <div className="w-full max-w-sm bg-white border border-[#DDD9D0] rounded-[16px] p-8">
-        <p className="font-mono text-[10px] tracking-[2px] uppercase text-[#1A3DAF] mb-3">New password</p>
-        <h1 className="font-display text-3xl font-bold tracking-tight text-[#0E0D0A] mb-2">Create new password</h1>
-        <p className="text-sm font-light text-[#5A5750] mb-7">Choose a strong password you haven't used before.</p>
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+    <div className="flex min-h-screen flex-col bg-[#F7F5F0] px-6 py-8 sm:px-12">
+      <Link href="/" className="inline-flex self-start" aria-label="Avora home"><Logo /></Link>
+
+      <div className="mx-auto flex w-full max-w-[360px] flex-1 flex-col justify-center py-12">
+        <h1 className="font-display text-[30px] font-semibold leading-tight text-[#0E0D0A]">Choose a new password</h1>
+        <p className="mt-2 text-[14.5px] text-[#5A5750]">Use at least 8 characters, and something you haven’t used here before.</p>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="mt-8 space-y-4">
           <div className="relative">
-            <Input label="New Password" type={showPw ? 'text' : 'password'} placeholder="Min 8 characters" error={errors.new_password?.message} {...register('new_password')} className="pr-10" />
-            <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-3 top-[30px] text-[#9B9890]">
-              {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            <Input label="New password" type={showPw ? 'text' : 'password'} autoComplete="new-password" placeholder="At least 8 characters" error={errors.new_password?.message} {...register('new_password')} className="pr-10" />
+            <button
+              type="button"
+              onClick={() => setShowPw(!showPw)}
+              aria-label={showPw ? 'Hide password' : 'Show password'}
+              className="absolute right-3 top-[37px] text-[#8A877F] hover:text-[#0E0D0A]"
+            >
+              {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          <Input label="Confirm Password" type="password" placeholder="Repeat new password" error={errors.confirm_password?.message} {...register('confirm_password')} />
-          <Button type="submit" loading={loading} className="w-full justify-center py-3">Update Password & Sign In 🔒</Button>
+          <Input label="Confirm password" type="password" autoComplete="new-password" placeholder="Type it again" error={errors.confirm_password?.message} {...register('confirm_password')} />
+          <Button type="submit" size="lg" loading={loading} className="mt-2 w-full">Update password</Button>
         </form>
+
+        <p className="mt-8 text-[14px] text-[#5A5750]">
+          <Link href="/login" className="link font-medium">Back to sign in</Link>
+        </p>
       </div>
     </div>
   )

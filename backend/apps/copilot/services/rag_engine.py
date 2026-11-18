@@ -13,6 +13,7 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 MAX_DOCS = 8
+TOP_CHUNKS = 6
 MAX_CTX_TOKENS = 4000
 CONFIDENCE_THRESHOLD = -1.0  # Allow negative similarity scores in retrieval, let Cohere Rerank filter them!
 
@@ -24,20 +25,25 @@ class AvoraRAGEngine:
     """
 
     def query(self, question: str, owner_id: str,
-              mode: str = "document", conversation_history: list = None) -> dict:
+              mode: str = "document", conversation_history: list = None, user=None) -> dict:
         t0 = time.time()
+        history = conversation_history or []
 
-        # 0 — Coordinator Agent: Intent Detection & Routing
-        coordinator_data = self._coordinator_agent(question, conversation_history or [])
-        active_agent = coordinator_data["agent_name"]
-        agent_reason = coordinator_data["reasoning"]
-        target_categories = coordinator_data["target_categories"]
+        # 0 + 1 — Coordinator routing and multi-query expansion are independent LLM
+        # calls: run them concurrently instead of back-to-back.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_route = ex.submit(self._coordinator_agent, question, history)
+            f_exp = ex.submit(self._expand_query_multi, question, history)
+            coordinator_data = f_route.result() or {}
+            queries = f_exp.result() or [question]
+        active_agent = coordinator_data.get("agent_name", "Search Agent")
+        agent_reason = coordinator_data.get("reasoning", "")
+        target_categories = coordinator_data.get("target_categories", []) or []
 
-        # 1 — Multi-Query Expansion
-        queries = self._expand_query_multi(question, conversation_history or [])
-
-        # 2 & 3 — Retrieve chunks for all query variations, filtering by agent categories
-        chunks = self._retrieve_chunks_multi(queries, owner_id, target_categories)
+        # 2 & 3 — Role-aware hybrid retrieval (vector + keyword probe + lexical, RRF fused).
+        # Agent categories are a soft boost, not a hard filter.
+        chunks = self._retrieve_chunks_multi(queries, owner_id, target_categories, user=user)
 
         # 4 — Rerank chunks with Cohere Rerank
         top_chunks, refs = self._rerank_chunks(chunks, question)
@@ -46,7 +52,7 @@ class AvoraRAGEngine:
         context = self._build_context(top_chunks, owner_id, question)
 
         # 6 — Generate answer using the specialized agent's persona
-        answer, thinking = self._generate_answer(question, context, active_agent.lower().replace(" agent", ""), conversation_history or [])
+        answer, thinking = self._generate_answer(question, context, active_agent.lower().replace(" agent", ""), history)
 
         # 7 — Score confidence based on Cohere relevance score
         confidence = self._score_confidence(answer, top_chunks)
@@ -170,79 +176,42 @@ Respond ONLY with valid JSON.
             logger.warning(f"[RAG] Groq query expansion failed: {e}")
             return [question, f"{question} summary", f"{question} details"]
 
-    def _retrieve_chunks_multi(self, queries: list, owner_id: str, target_categories: list = None) -> list:
-        """Search Qdrant for all query variations, combine and deduplicate chunk results."""
+    def _retrieve_chunks_multi(self, queries: list, owner_id: str, target_categories: list = None, user=None) -> list:
+        """Delegates to the shared ACL-aware retriever (apps/ai/services/retrieval.py)."""
         try:
-            from apps.ai.services.embeddings import generate_embedding
-            from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
-            from utils.qdrant_client import get_client
-
-            client = get_client()
-
-            retrieved_chunks = {}
-            for q in queries:
-                try:
-                    vector = generate_embedding(q, is_query=True)
-                    must_conditions = [FieldCondition(key="owner_id", match=MatchValue(value=owner_id))]
-                    
-                    if target_categories:
-                        must_conditions.append(FieldCondition(key="category", match=MatchAny(any=target_categories)))
-                        
-                    res = client.query_points(
-                        collection_name=settings.QDRANT_COLLECTION,
-                        query=vector,
-                        query_filter=Filter(must=must_conditions),
-                        limit=12,
-                        with_payload=True,
-                        score_threshold=CONFIDENCE_THRESHOLD,
-                    )
-                    hits = res.points
-                    for h in hits:
-                        chunk_id = str(h.id)
-                        doc_id = h.payload.get("document_id")
-                        if not doc_id:
-                            continue
-                        if chunk_id not in retrieved_chunks or h.score > retrieved_chunks[chunk_id]["score"]:
-                            # Handle zero-knowledge decryption
-                            chunk_text = h.payload.get("chunk_text", h.payload.get("short_summary", ""))
-                            is_encrypted = h.payload.get("is_encrypted", False)
-                            if is_encrypted and h.payload.get("chunk_text_enc"):
-                                try:
-                                    from apps.documents.models import DocumentEncryptionKey
-                                    from apps.documents.services.encryption import decrypt_string
-                                    key_record = DocumentEncryptionKey.objects.get(document_id=doc_id)
-                                    aes_key = key_record.encrypted_aes_key
-                                    chunk_text = decrypt_string(h.payload.get("chunk_text_enc"), aes_key)
-                                except Exception as dec_err:
-                                    logger.warning(f"[RAG] Failed to decrypt chunk {chunk_id}: {dec_err}")
-                                    chunk_text = "[Encrypted Content - Decryption Failed]"
-
-                            retrieved_chunks[chunk_id] = {
-                                "chunk_id":       chunk_id,
-                                "document_id":    doc_id,
-                                "original_name":  h.payload.get("original_name", ""),
-                                "category":       h.payload.get("category", ""),
-                                "text":           chunk_text,
-                                "score":          h.score,
-                            }
-                except Exception as query_err:
-                    logger.warning(f"[RAG] Single query search error for '{q}': {query_err}")
-
-            return list(retrieved_chunks.values())
+            from apps.ai.services.retrieval import retrieve_chunks
+            return retrieve_chunks(queries, user=user, owner_id=owner_id, limit_per_query=20,
+                                   boost_categories=target_categories, max_results=40)
         except Exception as e:
-            logger.error(f"[RAG] Multi-retrieval error: {e}")
+            logger.error(f"[RAG] retrieval error: {e}")
             return []
+
+    @staticmethod
+    def _rerank_text(c: dict) -> str:
+        from apps.ai.services.retrieval import citation_label
+        head = citation_label(c) + (f" · {c['section']}" if c.get("section") else "")
+        return f"[{head}]\n{c.get('text', '')}"[:4000]
+
+    @staticmethod
+    def _ref(c: dict) -> dict:
+        return {
+            "document_id":   str(c["document_id"]),
+            "document_name": c.get("original_name", ""),
+            "relevance":     round(float(c.get("relevance_score", c.get("score", 0.5))), 4),
+            "excerpt":       (c.get("text") or "")[:300],
+            "category":      c.get("category", ""),
+            "page":          c.get("page_start") or None,
+            "page_end":      c.get("page_end") or None,
+            "chunk_type":    c.get("chunk_type", "text"),
+            "section":       c.get("section", ""),
+        }
 
     def _rerank_chunks(self, chunks: list, query: str) -> tuple[list, list]:
         """Rank chunks using Cohere Rerank API to find the most relevant paragraphs."""
         if len(chunks) <= 2:
-            return chunks, [{
-                "document_id": str(c["document_id"]),
-                "document_name": c.get("original_name", ""),
-                "relevance": c.get("score", 0.5),
-                "excerpt": c["text"][:300],
-                "category": c.get("category", "")
-            } for c in chunks]
+            for c in chunks:
+                c.setdefault("relevance_score", c.get("score", 0.5))
+            return chunks, [self._ref(c) for c in chunks]
 
         cohere_key = os.getenv("COHERE_API_KEY")
         from utils.circuit_breaker import cohere_rerank_cb
@@ -260,7 +229,7 @@ Respond ONLY with valid JSON.
                     json={
                         "model":     "rerank-english-v3.0",
                         "query":     query,
-                        "documents": [c["text"] for c in chunks_to_rank]
+                        "documents": [self._rerank_text(c) for c in chunks_to_rank]
                     },
                     timeout=8
                 )
@@ -270,7 +239,7 @@ Respond ONLY with valid JSON.
                     top_chunks = []
                     refs = []
                     seen_docs = set()
-                    for r in results[:5]:  # Select top 5 chunks
+                    for r in results[:TOP_CHUNKS]:
                         idx = r["index"]
                         score = r["relevance_score"]
                         chunk_data = chunks_to_rank[idx]
@@ -279,13 +248,7 @@ Respond ONLY with valid JSON.
                         doc_id = chunk_data["document_id"]
                         if doc_id not in seen_docs:
                             seen_docs.add(doc_id)
-                            refs.append({
-                                "document_id":   str(doc_id),
-                                "document_name": chunk_data["original_name"],
-                                "relevance":     round(score, 4),
-                                "excerpt":       chunk_data["text"][:300],
-                                "category":      chunk_data["category"]
-                            })
+                            refs.append(self._ref(chunk_data))
                     return top_chunks, refs
                 elif cohere_resp.status_code == 429:
                     logger.warning("Cohere rerank rate limit.")
@@ -316,7 +279,7 @@ Respond ONLY with valid JSON.
                 AvoraRAGEngine._bge_model = CrossEncoder(model_name, max_length=512)
             
             chunks_to_rank = chunks[:40]
-            pairs = [[query, c["text"]] for c in chunks_to_rank]
+            pairs = [[query, self._rerank_text(c)] for c in chunks_to_rank]
             scores = AvoraRAGEngine._bge_model.predict(pairs)
             
             scored = []
@@ -330,23 +293,18 @@ Respond ONLY with valid JSON.
             top_chunks = []
             refs = []
             seen_docs = set()
-            for c in scored[:5]:
+            for c in scored[:TOP_CHUNKS]:
                 top_chunks.append(c)
                 doc_id = c["document_id"]
                 if doc_id not in seen_docs:
                     seen_docs.add(doc_id)
-                    refs.append({
-                        "document_id":   str(doc_id),
-                        "document_name": c["original_name"],
-                        "relevance":     round(c["relevance_score"], 4),
-                        "excerpt":       c["text"][:300],
-                        "category":      c["category"]
-                    })
+                    refs.append(self._ref(c))
             return top_chunks, refs
         except Exception as e:
             logger.warning(f"[RAG] BGE fallback failed: {e}")
-            for c in chunks[:5]: c["relevance_score"] = 0.5
-            return chunks[:5], []
+            top = sorted(chunks, key=lambda c: -c.get("fused", c.get("score", 0)))[:TOP_CHUNKS]
+            for c in top: c["relevance_score"] = 0.5
+            return top, [self._ref(c) for c in top]
 
     def _build_context(self, top_chunks: list, owner_id: str, question: str) -> str:
         """Format the top ranked chunks with sources and add Organizational AI Memory."""
@@ -379,10 +337,11 @@ Respond ONLY with valid JSON.
             logger.warning(f"[RAG] Failed to inject AI Memory: {e}")
             
         # 2. Document Chunks
+        from apps.ai.services.retrieval import citation_label
         for i, chunk in enumerate(top_chunks):
-            src_name = chunk.get('original_name', '')
-            src_cat  = chunk.get('category', '')
-            context_parts.append(f"[Source {i+1}: {src_name} | Category: {src_cat}]\n{chunk['text']}\n")
+            label = citation_label(chunk)
+            sec = f" | Section: {chunk['section']}" if chunk.get('section') else ""
+            context_parts.append(f"[Source {i+1}: {label} | Category: {chunk.get('category', '')}{sec}]\n{chunk['text']}\n")
         return "\n---\n".join(context_parts)
 
     def _generate_answer(self, question: str, context: str,
@@ -400,6 +359,10 @@ Respond ONLY with valid JSON.
             f"{mode_instructions.get(mode, mode_instructions['document'])}\n"
             "Analyze the DOCUMENT CONTEXT below and answer the user query.\n"
             "Keep your response direct, structured, and format lists cleanly in markdown.\n"
+            "Use ONLY facts present in the context. Copy numbers, dates and names exactly as written.\n"
+            "Cite every factual statement as [Source N] (include the page when the source label has one).\n"
+            "Sources marked 'figure' are machine-read descriptions of charts/images; sources marked 'table' are markdown tables.\n"
+            "If sources disagree, say so and cite both.\n"
             "If the answer cannot be found in the contexts, reply: \"I could not find this in the available documents.\""
         )
 

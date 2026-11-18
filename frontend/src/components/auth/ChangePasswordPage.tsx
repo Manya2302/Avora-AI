@@ -5,15 +5,16 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import toast from 'react-hot-toast'
-import { Eye, EyeOff, ArrowLeft, Lock } from 'lucide-react'
+import { Eye, EyeOff, ArrowLeft, Check } from 'lucide-react'
 import { usersApi } from '@/lib/api'
 import Input from '@/components/shared/Input'
 import Button from '@/components/shared/Button'
-import { Card, CardHeader, CardBody } from '@/components/shared/Card'
+import { Card } from '@/components/shared/Card'
+import PageHeader from '@/components/shared/PageHeader'
 
 const schema = z.object({
-  current_password: z.string().min(1, 'Required'),
-  new_password: z.string().min(8, 'Min 8 characters').regex(/[A-Z]/, 'Need uppercase').regex(/[0-9]/, 'Need number'),
+  current_password: z.string().min(1, 'Enter your current password'),
+  new_password: z.string().min(8, 'Use at least 8 characters').regex(/[A-Z]/, 'Add an uppercase letter').regex(/[0-9]/, 'Add a number'),
   confirm_password: z.string(),
 }).refine(d => d.new_password === d.confirm_password, { message: "Passwords don't match", path: ['confirm_password'] })
 
@@ -22,18 +23,18 @@ export default function ChangePasswordPage() {
   const [loading, setLoading] = useState(false)
   const [showCur, setShowCur] = useState(false)
   const [showNew, setShowNew] = useState(false)
-  const { register, handleSubmit, watch, formState: { errors } } = useForm({ resolver: zodResolver(schema) })
+  const { register, handleSubmit, watch, formState: { errors } } = useForm<z.infer<typeof schema>>({ resolver: zodResolver(schema) })
   const newPw = watch('new_password', '')
 
   const strength = [newPw.length >= 8, /[A-Z]/.test(newPw), /[0-9]/.test(newPw), /[^A-Za-z0-9]/.test(newPw)].filter(Boolean).length
-  const strengthColor = ['bg-red-400','bg-orange-400','bg-amber-400','bg-green-500'][strength - 1] || 'bg-[#ECEAE4]'
+  const strengthColor = ['bg-[#DC2626]','bg-[#D97706]','bg-[#D97706]','bg-[#16A34A]'][strength - 1] || 'bg-[#ECEAE4]'
   const strengthLabel = ['','Weak','Fair','Good','Strong'][strength]
 
   const onSubmit = async (data: any) => {
     setLoading(true)
     try {
       await usersApi.changePassword(data)
-      toast.success('Password updated. Other sessions revoked.')
+      toast.success('Password updated. Your other sessions were signed out.')
       router.push('/profile')
     } catch (e: any) {
       toast.error(e?.response?.data?.current_password || 'Update failed.')
@@ -41,60 +42,70 @@ export default function ChangePasswordPage() {
   }
 
   return (
-    <div className="max-w-md mx-auto space-y-5">
-      <button onClick={() => router.back()} className="flex items-center gap-2 text-sm text-[#9B9890] hover:text-[#0E0D0A] transition-colors">
-        <ArrowLeft className="w-4 h-4" /> Back to Profile
-      </button>
+    <div className="space-y-6">
       <div>
-        <h2 className="font-display text-2xl font-bold tracking-tight text-[#0E0D0A]">Change Password</h2>
-        <p className="text-sm font-light text-[#9B9890]">Your vault will be re-encrypted with the new credentials.</p>
+        <button onClick={() => router.back()} className="mb-3 inline-flex items-center gap-1.5 text-[13px] text-[#8A877F] transition-colors hover:text-[#0E0D0A]">
+          <ArrowLeft className="h-4 w-4" strokeWidth={1.75} /> Back to profile
+        </button>
+        <PageHeader title="Change password" description="You’ll stay signed in here. Every other device will be signed out." />
       </div>
 
       <Card>
-        <CardHeader title="Update Credentials" action={<span className="font-mono text-[9.5px] font-semibold px-2 py-1 rounded-full bg-green-50 text-green-600 border border-green-100">AES-256 Protected</span>} />
-        <CardBody>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-            <div className="relative">
-              <Input label="Current Password" type={showCur ? 'text' : 'password'} placeholder="Your current password" error={errors.current_password?.message} {...register('current_password')} className="pr-10" />
-              <button type="button" onClick={() => setShowCur(!showCur)} className="absolute right-3 top-[30px] text-[#9B9890] hover:text-[#0E0D0A]">{showCur ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button>
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <div className="grid gap-5 border-b border-[#ECEAE4] p-5 md:grid-cols-[minmax(0,240px)_minmax(0,1fr)] md:gap-8">
+            <div>
+              <h3 className="text-[14px] font-semibold text-[#0E0D0A]">Current password</h3>
+              <p className="mt-1 text-[13px] text-[#8A877F]">We need this to confirm it’s you.</p>
             </div>
-
-            <div className="h-px bg-[#ECEAE4]" />
-
-            <div className="relative">
-              <Input label="New Password" type={showNew ? 'text' : 'password'} placeholder="Min 8 chars, uppercase + number" error={errors.new_password?.message} {...register('new_password')} className="pr-10" />
-              <button type="button" onClick={() => setShowNew(!showNew)} className="absolute right-3 top-[30px] text-[#9B9890] hover:text-[#0E0D0A]">{showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button>
-            </div>
-
-            {newPw && (
-              <div>
-                <div className="flex gap-1 mb-1">
-                  {[0,1,2,3].map(i => <div key={i} className={`h-1 flex-1 rounded-full transition-all ${i < strength ? strengthColor : 'bg-[#ECEAE4]'}`} />)}
-                </div>
-                <p className="text-[10.5px] font-mono text-[#9B9890]">{strengthLabel}</p>
-                <div className="mt-2 space-y-1">
-                  {[['At least 8 characters', newPw.length >= 8],['Uppercase letter', /[A-Z]/.test(newPw)],['Number', /[0-9]/.test(newPw)],['Special character', /[^A-Za-z0-9]/.test(newPw)]].map(([label, ok]) => (
-                    <div key={String(label)} className={`flex items-center gap-2 text-xs ${ok ? 'text-green-600' : 'text-[#9B9890]'}`}>
-                      <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${ok ? 'bg-green-600 border-green-600' : 'border-[#DDD9D0]'}`}>
-                        {ok && <svg className="w-2 h-2 text-white" viewBox="0 0 10 10" fill="none"><path d="M2 5l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>}
-                      </div>
-                      {String(label)}
-                    </div>
-                  ))}
-                </div>
+            <div className="max-w-[420px]">
+              <div className="relative">
+                <Input label="Current password" type={showCur ? 'text' : 'password'} autoComplete="current-password" error={errors.current_password?.message} {...register('current_password')} className="pr-10" />
+                <button type="button" onClick={() => setShowCur(!showCur)} aria-label={showCur ? 'Hide password' : 'Show password'} className="absolute right-3 top-[37px] text-[#8A877F] hover:text-[#0E0D0A]">{showCur ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
               </div>
-            )}
-
-            <Input label="Confirm New Password" type="password" placeholder="Repeat new password" error={errors.confirm_password?.message} {...register('confirm_password')} />
-
-            <div className="flex items-start gap-2.5 p-3 bg-[#EBF0FF] border border-[#1A3DAF]/12 rounded-[9px]">
-              <Lock className="w-4 h-4 text-[#1A3DAF] flex-shrink-0 mt-0.5" />
-              <p className="text-[11.5px] font-light text-[#1A3DAF]">After updating, all other active sessions will be automatically signed out for security.</p>
             </div>
+          </div>
 
-            <Button type="submit" loading={loading} className="w-full justify-center py-3">Update Password 🔒</Button>
-          </form>
-        </CardBody>
+          <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,240px)_minmax(0,1fr)] md:gap-8">
+            <div>
+              <h3 className="text-[14px] font-semibold text-[#0E0D0A]">New password</h3>
+              <p className="mt-1 text-[13px] text-[#8A877F]">At least 8 characters, with an uppercase letter and a number.</p>
+            </div>
+            <div className="max-w-[420px] space-y-4">
+              <div className="relative">
+                <Input label="New password" type={showNew ? 'text' : 'password'} autoComplete="new-password" error={errors.new_password?.message} {...register('new_password')} className="pr-10" />
+                <button type="button" onClick={() => setShowNew(!showNew)} aria-label={showNew ? 'Hide password' : 'Show password'} className="absolute right-3 top-[37px] text-[#8A877F] hover:text-[#0E0D0A]">{showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
+              </div>
+
+              {newPw && (
+                <div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-1 gap-1">
+                      {[0,1,2,3].map(i => <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i < strength ? strengthColor : 'bg-[#ECEAE4]'}`} />)}
+                    </div>
+                    <span className="w-12 text-right text-[12px] text-[#8A877F]">{strengthLabel}</span>
+                  </div>
+                  <ul className="mt-3 space-y-1.5">
+                    {[['At least 8 characters', newPw.length >= 8],['An uppercase letter', /[A-Z]/.test(newPw)],['A number', /[0-9]/.test(newPw)],['A symbol (optional)', /[^A-Za-z0-9]/.test(newPw)]].map(([label, ok]) => (
+                      <li key={String(label)} className={`flex items-center gap-2 text-[12.5px] ${ok ? 'text-[#15803D]' : 'text-[#8A877F]'}`}>
+                        <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${ok ? 'border-[#16A34A] bg-[#16A34A]' : 'border-[#DDD9D0]'}`}>
+                          {ok && <Check className="h-2.5 w-2.5 text-white" strokeWidth={3} />}
+                        </span>
+                        {String(label)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <Input label="Confirm new password" type="password" autoComplete="new-password" error={errors.confirm_password?.message} {...register('confirm_password')} />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#ECEAE4] bg-[#FBFAF7] px-5 py-3">
+            <p className="text-[12.5px] text-[#8A877F]">Other active sessions are signed out when you save.</p>
+            <Button type="submit" loading={loading}>Update password</Button>
+          </div>
+        </form>
       </Card>
     </div>
   )

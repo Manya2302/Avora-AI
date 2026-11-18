@@ -29,40 +29,44 @@ export default function ComplianceCopilot() {
       setCtx(data.context)
       setMsgs(p => [...p, {id:(Date.now()+1).toString(),role:'assistant',message:data.answer,created_at:new Date().toISOString()}])
     } catch {
-      setMsgs(p => [...p, {id:Date.now().toString(),role:'assistant',message:'Sorry, I could not process that. Please try again.',created_at:new Date().toISOString()}])
+      setMsgs(p => [...p, {id:Date.now().toString(),role:'assistant',message:'Sorry, I couldn’t answer that. Please try again.',created_at:new Date().toISOString()}])
     } finally { setLoading(false) }
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-120px)] max-w-4xl">
-      <div className="flex items-center gap-3 mb-4">
-        <button onClick={()=>router.back()} className="text-[#9B9890] hover:text-[#0E0D0A]"><ArrowLeft className="w-4 h-4"/></button>
-        <div className="w-9 h-9 bg-gradient-to-br from-[#1A3DAF] to-[#7B9FE8] rounded-[10px] flex items-center justify-center">
-          <Sparkles className="w-4 h-4 text-white"/>
+    <div className="flex h-[calc(100vh-120px)] max-w-4xl flex-col">
+      {/* header */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <button onClick={()=>router.back()} aria-label="Go back"
+          className="-ml-1 rounded-[6px] p-1.5 text-[#8A877F] hover:bg-[#ECEAE4] hover:text-[#0E0D0A]">
+          <ArrowLeft className="h-4 w-4" strokeWidth={1.75}/>
+        </button>
+        <div className="min-w-0 flex-1">
+          <h1 className="page-title">Compliance Copilot</h1>
+          <p className="mt-0.5 text-[13.5px] text-[#5A5750]">Questions about your score, missing documents, expiring certificates and contract risk.</p>
         </div>
-        <div><h2 className="font-display text-xl font-bold text-[#0E0D0A]">Compliance Copilot</h2>
-          <p className="text-xs text-[#9B9890]">AI-powered compliance intelligence</p></div>
         {ctx && (
-          <div className="ml-auto flex items-center gap-3 px-3 py-1.5 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[9px]">
-            <div className={`w-2 h-2 rounded-full ${ctx.score>=80?'bg-green-500':ctx.score>=60?'bg-amber-400':'bg-red-500'}`}/>
-            <span className="font-mono text-[11px] text-[#5A5750]">Score: <strong>{ctx.score}</strong></span>
-            <span className="font-mono text-[11px] text-[#5A5750]">Missing: <strong className="text-red-600">{ctx.missing}</strong></span>
+          <div className="flex items-center gap-3 rounded-[8px] border border-[#DDD9D0] bg-white px-3 py-1.5 text-[12.5px] text-[#5A5750]">
+            <span className="flex items-center gap-1.5">
+              <span className={`h-1.5 w-1.5 rounded-full ${ctx.score>=80?'bg-[#16A34A]':ctx.score>=60?'bg-[#D97706]':'bg-[#DC2626]'}`}/>
+              Score <span className="font-medium tabular-nums text-[#0E0D0A]">{ctx.score}</span>
+            </span>
+            <span className="text-[#DDD9D0]">|</span>
+            <span>Missing <span className="font-medium tabular-nums text-[#0E0D0A]">{ctx.missing}</span></span>
           </div>
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+      {/* conversation */}
+      <div className="flex-1 space-y-4 overflow-y-auto pr-1">
         {msgs.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center py-12">
-            <div className="w-16 h-16 bg-gradient-to-br from-[#EBF0FF] to-[#F0FDF4] rounded-2xl flex items-center justify-center mb-4 border border-[#1A3DAF]/10">
-              <Sparkles className="w-7 h-7 text-[#1A3DAF]"/>
-            </div>
-            <h3 className="font-display text-xl font-semibold text-[#0E0D0A] mb-2">Ask Avora Compliance Copilot</h3>
-            <p className="text-sm text-[#9B9890] mb-6 max-w-sm">I have full visibility into your compliance score, missing documents, expiring certificates and contract risks.</p>
-            <div className="grid grid-cols-2 gap-2 w-full max-w-lg">
+          <div className="flex h-full flex-col items-center justify-center py-12 text-center">
+            <h2 className="text-[16px] font-semibold text-[#0E0D0A]">Ask about your compliance</h2>
+            <p className="mb-6 mt-1 max-w-sm text-[13.5px] text-[#8A877F]">Copilot can see your compliance score, missing documents, expiring certificates and contract risks.</p>
+            <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
               {QUICK.map(q => (
                 <button key={q} onClick={()=>send(q)}
-                  className="text-left p-3 bg-white border border-[#DDD9D0] rounded-[11px] text-xs font-medium text-[#5A5750] hover:border-[#1A3DAF]/40 hover:bg-[#EBF0FF] hover:text-[#1A3DAF] transition-all">
+                  className="rounded-[8px] border border-[#DDD9D0] bg-white px-3 py-2.5 text-left text-[13.5px] text-[#2B2924] transition-colors hover:border-[#BDB8AC] hover:bg-[#FBFAF7]">
                   {q}
                 </button>
               ))}
@@ -73,25 +77,25 @@ export default function ComplianceCopilot() {
         {msgs.map(m => (
           <div key={m.id} className={`flex gap-3 ${m.role==='user'?'justify-end':'justify-start'}`}>
             {m.role==='assistant' && (
-              <div className="w-7 h-7 bg-gradient-to-br from-[#1A3DAF] to-[#7B9FE8] rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Sparkles className="w-3.5 h-3.5 text-white"/>
+              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F1EFEA]">
+                <Sparkles className="h-3.5 w-3.5 text-[#1A3DAF]" strokeWidth={1.75}/>
               </div>
             )}
-            <div className={`max-w-[75%] rounded-[14px] px-4 py-3 ${m.role==='user'?'bg-[#0E0D0A] text-white rounded-br-[4px]':'bg-white border border-[#DDD9D0] text-[#0E0D0A] rounded-bl-[4px]'}`}>
-              <p className="text-[14px] font-light leading-[1.7] whitespace-pre-wrap">{m.message}</p>
-              <p className={`text-[10px] mt-1 font-mono ${m.role==='user'?'text-white/40':'text-[#9B9890]'}`}>{new Date(m.created_at).toLocaleTimeString()}</p>
+            <div className={`max-w-[85%] rounded-[12px] px-4 py-3 sm:max-w-[75%] ${m.role==='user'?'rounded-br-[4px] bg-[#0E0D0A] text-[#F7F5F0]':'rounded-bl-[4px] border border-[#DDD9D0] bg-white text-[#0E0D0A]'}`}>
+              <p className="whitespace-pre-wrap text-[14px] leading-[1.65]">{m.message}</p>
+              <p className={`mt-1 text-[11px] ${m.role==='user'?'text-[#F7F5F0]/50':'text-[#8A877F]'}`}>{new Date(m.created_at).toLocaleTimeString()}</p>
             </div>
           </div>
         ))}
 
         {loading && (
           <div className="flex gap-3">
-            <div className="w-7 h-7 bg-gradient-to-br from-[#1A3DAF] to-[#7B9FE8] rounded-full flex items-center justify-center">
-              <Sparkles className="w-3.5 h-3.5 text-white"/>
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F1EFEA]">
+              <Sparkles className="h-3.5 w-3.5 text-[#1A3DAF]" strokeWidth={1.75}/>
             </div>
-            <div className="bg-white border border-[#DDD9D0] rounded-[14px] rounded-bl-[4px] px-4 py-3">
-              <div className="flex gap-1.5 items-center h-5">
-                {[0,1,2].map(i=><div key={i} className="w-1.5 h-1.5 bg-[#1A3DAF] rounded-full animate-bounce" style={{animationDelay:`${i*0.15}s`}}/>)}
+            <div className="rounded-[12px] rounded-bl-[4px] border border-[#DDD9D0] bg-white px-4 py-3" aria-label="Copilot is thinking">
+              <div className="flex h-5 items-center gap-1.5">
+                {[0,1,2].map(i=><div key={i} className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#8A877F]" style={{animationDelay:`${i*0.15}s`}}/>)}
               </div>
             </div>
           </div>
@@ -99,14 +103,16 @@ export default function ComplianceCopilot() {
         <div ref={bottomRef}/>
       </div>
 
-      <div className="mt-4 flex items-center gap-3 p-3 bg-white border border-[#DDD9D0] rounded-[14px] focus-within:border-[#1A3DAF] focus-within:ring-2 focus-within:ring-[#1A3DAF]/8 transition-all">
-        <Shield className="w-4 h-4 text-[#9B9890] flex-shrink-0"/>
+      {/* composer */}
+      <div className="mt-4 flex items-center gap-3 rounded-[12px] border border-[#DDD9D0] bg-white p-2 pl-3.5 transition-colors focus-within:border-[#1A3DAF] focus-within:ring-[3px] focus-within:ring-[#1A3DAF]/10">
+        <Shield className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75}/>
         <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&!e.shiftKey&&send()}
-          placeholder="Ask about compliance, missing docs, expiry, contract risks…"
-          className="flex-1 bg-transparent border-none outline-none text-[14px] font-light text-[#0E0D0A] placeholder:text-[#9B9890]"/>
-        <button onClick={()=>send()} disabled={!input.trim()||loading}
-          className="w-8 h-8 bg-[#0E0D0A] rounded-[8px] flex items-center justify-center hover:bg-[#1A3DAF] disabled:opacity-40 disabled:cursor-not-allowed">
-          <Send className="w-3.5 h-3.5 text-white"/>
+          aria-label="Ask Copilot a question"
+          placeholder="Ask about missing documents, expiry dates, contract risk…"
+          className="min-w-0 flex-1 border-none bg-transparent text-[14px] text-[#0E0D0A] outline-none placeholder:text-[#9B9890]"/>
+        <button onClick={()=>send()} disabled={!input.trim()||loading} aria-label="Send"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-[#0E0D0A] text-[#F7F5F0] transition-colors hover:bg-[#2B2924] disabled:cursor-not-allowed disabled:opacity-40">
+          <Send className="h-3.5 w-3.5"/>
         </button>
       </div>
     </div>

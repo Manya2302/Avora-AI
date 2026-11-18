@@ -41,7 +41,8 @@ class AIProcessingQueue(models.Model):
     class Meta:
         db_table = 'ai_processing_queue'
         ordering = ['-created_at']
-        indexes  = [models.Index(fields=['document_id']), models.Index(fields=['stage'])]
+        indexes  = [
+            models.Index(fields=['stage', '-updated_at']),models.Index(fields=['document_id']), models.Index(fields=['stage'])]
 
     def __str__(self):
         return f"Queue[{self.document_id}] → {self.stage}"
@@ -214,6 +215,7 @@ class DocumentRelationship(models.Model):
 
     class Meta:
         db_table = 'document_relationships'
+        indexes = [models.Index(fields=['source_document_id'])]
         unique_together = ('source_document_id', 'target_document_id')
 
 
@@ -228,6 +230,7 @@ class DocumentRecommendation(models.Model):
 
     class Meta:
         db_table = 'document_recommendations'
+        indexes = [models.Index(fields=['document_id', '-score'])]
         ordering = ['-score']
 
 
@@ -284,6 +287,7 @@ class SearchHistory(models.Model):
 
     class Meta:
         db_table = 'search_history'
+        indexes = [models.Index(fields=['user', '-created_at'])]
         ordering = ['-created_at']
 
 
@@ -299,4 +303,5 @@ class SearchAnalytics(models.Model):
 
     class Meta:
         db_table = 'search_analytics'
+        indexes = [models.Index(fields=['-search_count'])]
         ordering = ['-search_count']

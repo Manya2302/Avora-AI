@@ -5,3 +5,6 @@ class OrganizationsConfig(AppConfig):
     name  = 'apps.organizations'
     label = 'organizations'
     verbose_name = 'Organizations'
+
+    def ready(self):
+        from . import signals  # noqa: F401  (ACL cache invalidation)

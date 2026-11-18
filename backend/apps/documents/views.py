@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import os
+import re
 import uuid
 from django.db import models
 from django.conf import settings
@@ -21,8 +24,15 @@ from .services.encryption import generate_aes_key, encrypt_chunk, wrap_key_with_
 from .services.chunking import calculate_total_chunks
 from .services.storage import generate_storage_key, upload_chunk, ensure_bucket_exists
 from apps.audit.models import AuditLog
-from .tasks import process_document_ai
+from .tasks import process_document_ai  # noqa: F401
+from apps.ai.services.dispatch import dispatch_document_processing
 from apps.ai.tasks import analyze_temporal_diff_async
+
+_SHA256_HEX = re.compile(r'^[0-9a-f]{64}$')
+
+
+def _is_sha256_hex(value: str) -> bool:
+    return bool(_SHA256_HEX.match(value or ''))
 
 
 class InitiateUploadView(APIView):
@@ -66,14 +76,15 @@ class InitiateUploadView(APIView):
         )
 
         # Create default visibility for new documents based on user selection
-        try:
-            from apps.organizations.permissions import ensure_visibility
-            ensure_visibility(document.id, request.user, visibility=d.get('visibility', 'private'))
-        except Exception:
-            pass  # organizations app not fully migrated yet — silent fail
+        from apps.organizations.models import DocumentVisibility
+        from apps.organizations.permissions import ensure_visibility
+        vis_level = d.get('visibility', 'private')
+        if vis_level not in DocumentVisibility.Level.values:
+            vis_level = 'private'
+        ensure_visibility(document.id, request.user, visibility=vis_level)
 
-        # Generate per-document AES-256 key + RSA-4096 key pair
-        private_pem, public_pem = generate_rsa_key_pair(settings.RSA_KEY_SIZE)
+        # Per-document AES-256 key. (An RSA-4096 key pair used to be generated here on every
+        # upload and then discarded — 0.2-0.8 s of CPU per upload for nothing.)
         aes_key     = generate_aes_key()
         # In mock/development mode, save the plaintext key directly in encrypted_aes_key
         # so the async pipeline task can decrypt it.
@@ -92,7 +103,8 @@ class InitiateUploadView(APIView):
             'total_chunks': total_chunks,
             'chunk_size': settings.CHUNK_SIZE_BYTES,
             'storage_key': storage_key,
-            'aes_key_hex': aes_key.hex(),    # WARNING: for demo; use client-side crypto in prod
+            # The data key is no longer sent to the browser: chunks are encrypted server-side with
+            # the stored per-document key, so exposing it (logs, proxies, devtools) gained nothing.
             'message': 'Upload initiated. Start sending chunks.',
         }, status=status.HTTP_201_CREATED)
 
@@ -114,18 +126,43 @@ class UploadChunkView(APIView):
         except Document.DoesNotExist:
             return Response({'error': 'Document not found.'}, status=404)
 
+        idx = d['chunk_index']
+        if idx < 0 or idx >= max(document.total_chunks, 1):
+            return Response({'error': 'chunk_index out of range.'}, status=400)
+        if d['chunk_data'].size > settings.CHUNK_SIZE_BYTES + 1024:
+            return Response({'error': 'Chunk exceeds the configured chunk size.'}, status=413)
+        if document.status not in (Document.Status.UPLOADING,):
+            return Response({'error': 'Upload already completed for this document.'}, status=409)
         chunk_data = d['chunk_data'].read()
+
+        # Transport integrity: the client sends the hex SHA-256 of the plaintext chunk it read.
+        # Verify it when it is a real digest (legacy clients sent 'placeholder', which is skipped).
+        client_hash = (d.get('sha256_hash') or '').strip().lower()
+        if _is_sha256_hex(client_hash) and not hmac.compare_digest(
+                hashlib.sha256(chunk_data).hexdigest(), client_hash):
+            return Response({'error': 'Chunk checksum mismatch — the chunk was corrupted in transit. Retry the upload.'},
+                            status=400)
 
         # Layer 1: Compress
         compressed = compress(chunk_data)
 
         # Layer 3: Encrypt (AES-256-GCM) — key from request in demo
         # In production, client sends pre-encrypted chunk
-        aes_key_hex = request.data.get('aes_key_hex', '')
-        if not aes_key_hex:
-            return Response({'error': 'aes_key_hex required'}, status=400)
-
-        aes_key    = bytes.fromhex(aes_key_hex)
+        # The server-held key is authoritative. A client-supplied key that differs would
+        # silently encrypt chunks the pipeline can never decrypt (corrupt document).
+        key_row = DocumentEncryptionKey.objects.filter(document=document).only('encrypted_aes_key').first()
+        if key_row is None:
+            return Response({'error': 'Encryption key missing for this document.'}, status=409)
+        aes_key = bytes(key_row.encrypted_aes_key)
+        aes_key_hex = str(request.data.get('aes_key_hex', '') or '')
+        if aes_key_hex in ('undefined', 'null'):   # older frontends echo a missing field
+            aes_key_hex = ''
+        if aes_key_hex:
+            try:
+                if not hmac.compare_digest(bytes.fromhex(aes_key_hex), aes_key):
+                    return Response({'error': 'aes_key_hex does not match this document.'}, status=400)
+            except ValueError:
+                return Response({'error': 'aes_key_hex is not valid hex.'}, status=400)
         enc_result = encrypt_chunk(compressed, aes_key)
 
         # Layer 5: SHA-256 integrity hash
@@ -145,16 +182,19 @@ class UploadChunkView(APIView):
             }
         )
 
-        uploaded_count = document.chunks.filter(upload_status='done').count()
+        uploaded_count = document.chunks.filter(upload_status='done', chunk_index__lt=document.total_chunks).count()
 
-        if uploaded_count >= document.total_chunks:
+        # Atomic status flip: exactly one request (the last chunk) starts processing,
+        # even when the final chunks arrive concurrently.
+        if uploaded_count >= document.total_chunks and Document.objects.filter(
+                id=document.id, status=Document.Status.UPLOADING).update(status=Document.Status.PROCESSING):
             document.status = Document.Status.PROCESSING
             document.compressed_size = document.chunks.aggregate(
                 s=models.Sum('chunk_size'))['s'] or 0
             document.encrypted_size = document.compressed_size
-            document.save()
-            # Execute Celery task (will run synchronously if CELERY_TASK_ALWAYS_EAGER=True)
-            process_document_ai.delay(str(document.id))
+            document.save(update_fields=["compressed_size", "encrypted_size", "updated_at"])
+            # Hand off to the AI pipeline (background pool in eager mode, Celery worker otherwise)
+            dispatch_document_processing(document.id)
 
         return Response({'chunk_index': d['chunk_index'], 'status': 'uploaded',
                          'uploaded': uploaded_count, 'total': document.total_chunks})
@@ -165,6 +205,7 @@ class DocumentViewSet(ModelViewSet):
     /api/documents/  — CRUD + list for documents.
     """
     permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['original_name']   # ?search=<text> (SearchFilter is a default backend)
 
     def get_queryset(self):
         return Document.objects.filter(
@@ -184,14 +225,10 @@ class DocumentViewSet(ModelViewSet):
         AuditLog.log(request, 'delete', document_id=doc_id_str, resource=document.original_name)
         
         # Attempt to remove vectors from Qdrant Cloud
+        # Remove ALL vectors of the document (chunks + document point) by payload filter
         try:
-            from utils.qdrant_client import get_client
-            from django.conf import settings
-            client = get_client()
-            client.delete(
-                collection_name=settings.QDRANT_COLLECTION,
-                points_selector=[doc_id_str]
-            )
+            from apps.ai.services.vector_store import delete_document_points
+            delete_document_points(doc_id_str)
         except Exception:
             pass
             
@@ -223,6 +260,52 @@ class DocumentViewSet(ModelViewSet):
         # In production: generate MinIO pre-signed URL
         return Response({'message': 'Download endpoint — integrate MinIO presign here.',
                          'document_id': str(document.id)})
+
+    @action(detail=True, methods=['get'], url_path='download')
+    def download(self, request, pk=None):
+        """
+        GET /api/documents/<id>/download/ — stream the original file.
+        Chunks are fetched from storage one at a time, checked against their stored SHA-256,
+        AES-256-GCM decrypted and ZSTD-decompressed, so memory stays at ~one chunk.
+        """
+        from urllib.parse import quote
+        from django.http import StreamingHttpResponse
+        from .services.storage import download_chunk
+        from .services.encryption import decrypt_chunk
+        from .services.compression import decompress
+        import logging
+
+        document = self.get_object()
+        if document.status == Document.Status.UPLOADING:
+            return Response({'error': 'This document is still uploading.'}, status=409)
+        chunks = list(document.chunks.filter(upload_status='done').order_by('chunk_index')
+                      .only('chunk_index', 'storage_key', 'sha256_hash', 'iv'))
+        key_row = DocumentEncryptionKey.objects.filter(document=document).only('encrypted_aes_key').first()
+        if not chunks or len(chunks) < document.total_chunks or key_row is None:
+            return Response({'error': 'The stored file is incomplete and cannot be downloaded.'}, status=409)
+        aes_key = bytes(key_row.encrypted_aes_key)
+
+        AuditLog.log(request, 'download', document_id=str(document.id), resource=document.original_name)
+
+        def stream():
+            for c in chunks:
+                blob = download_chunk(c.storage_key)
+                if c.sha256_hash and hashlib.sha256(blob).hexdigest() != c.sha256_hash:
+                    # Can't change the status mid-stream; stopping early makes the transfer fail
+                    # on the client (Content-Length not reached) instead of serving corrupt bytes.
+                    logging.getLogger(__name__).error(
+                        'Integrity check failed for document %s chunk %s', document.id, c.chunk_index)
+                    return
+                yield decompress(decrypt_chunk(blob, aes_key, c.iv))
+
+        resp = StreamingHttpResponse(stream(), content_type=document.mime_type or 'application/octet-stream')
+        if document.original_size:
+            resp['Content-Length'] = str(document.original_size)
+        ascii_name = document.original_name.encode('ascii', 'ignore').decode().replace('"', '') or 'document'
+        resp['Content-Disposition'] = (f'attachment; filename="{ascii_name}"; '
+                                       f"filename*=UTF-8''{quote(document.original_name)}")
+        resp['X-Content-Type-Options'] = 'nosniff'
+        return resp
 
     @action(detail=True, methods=['get'])
     def versions(self, request, pk=None):
@@ -271,11 +354,8 @@ class DocumentViewSet(ModelViewSet):
         if not previous_version:
             # Fallback to OCR text
             from apps.ai.models import DocumentOCR
-            try:
-                ocr = DocumentOCR.objects.get(document_id=document.id)
-                old_text = ocr.cleaned_text or ocr.raw_text
-            except:
-                old_text = ""
+            ocr = DocumentOCR.objects.filter(document_id=document.id).only('cleaned_text', 'raw_text').first()
+            old_text = (ocr.cleaned_text or ocr.raw_text) if ocr else ""
                 
             previous_version = DocumentVersion.objects.create(
                 document=document,
@@ -303,34 +383,16 @@ class DocumentViewSet(ModelViewSet):
             to_version=new_version
         )
         
-        analyze_temporal_diff_async.delay(str(changelog.id))
-        
-        # Update OCR Text
+        # Update stored text now (cheap); everything slow runs in the background
         from apps.ai.models import DocumentOCR
-        
-        try:
-            ocr = DocumentOCR.objects.get(document_id=document.id)
-            ocr.raw_text = raw_text
-            ocr.cleaned_text = raw_text
-            ocr.save(update_fields=['raw_text', 'cleaned_text'])
-        except DocumentOCR.DoesNotExist:
-            DocumentOCR.objects.create(document_id=document.id, raw_text=raw_text, cleaned_text=raw_text)
-            
-        # ── Document Type Router (Re-Run for Edited Text) ──
-        from apps.ai.services.classification import classify_document_v2
-        from apps.ai.tasks import analyze_compliance_risk_async, analyze_contract_async
-        import logging
-        
-        cls_data = classify_document_v2(str(document.id), raw_text)
-        category = cls_data.get('category', 'other')
-        logging.getLogger(__name__).info(f"[Editor Router] Re-routing edited document {document.id} as {category}")
-        
-        if category in ('contract', 'vendor_agreement', 'legal_agreement'):
-            analyze_contract_async.delay(str(document.id), str(request.user.id))
-            analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
-        else:
-            # Run compliance risk for all other documents to make risk detection more secure and detectable
-            analyze_compliance_risk_async.delay(str(document.id), str(request.user.id), document.original_name)
+        DocumentOCR.objects.update_or_create(
+            document_id=document.id, defaults={'raw_text': raw_text, 'cleaned_text': raw_text})
+
+        # Re-classify + RE-INDEX the edited text (previously the vector index kept serving the
+        # old text to Copilot/search forever), temporal diff, and downstream analysers.
+        from apps.ai.services.dispatch import dispatch
+        from .tasks import reprocess_edited_document
+        dispatch(reprocess_edited_document, str(document.id), str(request.user.id), str(changelog.id))
 
         return Response({
             'message': 'Version saved successfully. Temporal intelligence analysis started.',
@@ -345,5 +407,8 @@ class DocumentMetadataView(generics.RetrieveUpdateAPIView):
     serializer_class = DocumentMetadataSerializer
 
     def get_object(self):
-        doc = Document.objects.get(id=self.kwargs['pk'], owner=self.request.user)
-        return doc.metadata
+        from django.shortcuts import get_object_or_404
+        doc = get_object_or_404(Document.objects.select_related('metadata'),
+                                id=self.kwargs['pk'], owner=self.request.user, is_deleted=False)
+        meta, _ = DocumentMetadata.objects.get_or_create(document=doc)
+        return meta

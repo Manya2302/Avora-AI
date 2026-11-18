@@ -31,6 +31,16 @@ class ContractAnalysis(models.Model):
     risk_level = models.CharField(max_length=10, choices=RiskLevel.choices, default=RiskLevel.LOW)
     risk_score = models.FloatField(default=0.0)
     status = models.CharField(max_length=15, choices=Status.choices, default=Status.ACTIVE)
+
+    class AnalysisStatus(models.TextChoices):
+        RUNNING = "running", "Analyzing"
+        READY   = "ready",   "Ready"
+        FAILED  = "failed",  "Failed"
+    # Background analysis state — the API returns immediately and the UI polls this
+    analysis_status = models.CharField(max_length=10, choices=AnalysisStatus.choices,
+                                       default=AnalysisStatus.READY)
+    analysis_error  = models.CharField(max_length=300, blank=True, default="")
+    analyzed_at     = models.DateTimeField(null=True, blank=True)
     ai_summary = models.TextField(blank=True)
     key_obligations = models.JSONField(default=list)
     key_dates = models.JSONField(default=list)
@@ -38,6 +48,7 @@ class ContractAnalysis(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         db_table = "contract_analyses"
+        indexes = [models.Index(fields=['owner', '-created_at']), models.Index(fields=['owner', 'risk_level']), models.Index(fields=['owner', 'status']), models.Index(fields=['owner', 'expiry_date'])]
         ordering = ["-created_at"]
 
 class ContractClause(models.Model):
@@ -91,6 +102,7 @@ class ContractRisk(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         db_table = "contract_risks"
+        indexes = [models.Index(fields=['contract', 'severity'])]
         ordering = ["-severity"]
 
 class ContractRenewal(models.Model):
@@ -111,4 +123,5 @@ class ContractRenewal(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         db_table = "contract_renewals"
+        indexes = [models.Index(fields=['renewal_due', 'is_completed'])]
         ordering = ["renewal_due"]

@@ -9,7 +9,7 @@ def generate_audit_package(owner, name=None) -> dict:
     try:
         profile  = ComplianceProfile.objects.get(owner=owner)
         industry = profile.industry
-    except: industry = "other"
+    except Exception: industry = "other"
     score_data = compute_compliance_score(owner, industry)
     docs       = Document.objects.filter(owner=owner, is_deleted=False, status="ai_ready")
     doc_ids    = [str(d.id) for d in docs]

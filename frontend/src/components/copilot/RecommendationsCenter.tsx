@@ -1,9 +1,11 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { Lightbulb, X, ArrowRight } from 'lucide-react'
+import { Lightbulb, X } from 'lucide-react'
 import { copilotApi } from '@/lib/api'
 import { Card } from '@/components/shared/Card'
 import Badge from '@/components/shared/Badge'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
 import type { AIRecommendation } from '@/types'
 import toast from 'react-hot-toast'
 
@@ -20,41 +22,47 @@ export default function RecommendationsCenter() {
   }
 
   return (
-    <div className="space-y-5 max-w-3xl">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-amber-50 border border-amber-100 rounded-[11px] flex items-center justify-center"><Lightbulb className="w-5 h-5 text-amber-600"/></div>
-        <div><h2 className="font-display text-2xl font-bold text-[#0E0D0A]">Recommendations Center</h2>
-          <p className="text-sm text-[#9B9890]">Proactive AI suggestions based on your documents</p></div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Recommendations"
+        description="Things Copilot noticed in your documents that are worth a look."
+      />
 
-      {loading ? <div className="h-32 bg-white border border-[#DDD9D0] rounded-[14px] animate-pulse"/>
-      : recs.length === 0 ? (
-        <div className="text-center py-16 bg-white border border-[#DDD9D0] rounded-[16px]">
-          <Lightbulb className="w-10 h-10 text-[#DDD9D0] mx-auto mb-3"/>
-          <p className="text-sm text-[#9B9890]">No recommendations right now. Avora is monitoring your documents.</p>
-        </div>
+      {loading ? (
+        <Card>
+          <div className="space-y-2 p-5">
+            {Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-10 animate-pulse rounded-[6px] bg-[#F1EFEA]"/>)}
+          </div>
+        </Card>
+      ) : recs.length === 0 ? (
+        <Card>
+          <EmptyState icon={<Lightbulb/>} title="Nothing to review right now">
+            New suggestions appear here as documents are added or change.
+          </EmptyState>
+        </Card>
       ) : (
-        <div className="space-y-3">
+        <Card>
           {recs.map(r => (
-            <Card key={r.id}>
-              <div className="p-4 flex items-start gap-3">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                    <h3 className="font-semibold text-[#0E0D0A] text-sm">{r.title}</h3>
-                    <Badge variant={PV[r.priority]}>{r.priority}</Badge>
-                  </div>
-                  <p className="text-sm text-[#5A5750] mb-2">{r.description}</p>
-                  {r.action && (
-                    <div className="flex items-center gap-1.5 text-xs font-medium text-[#1A3DAF]">
-                      <ArrowRight className="w-3 h-3"/> {r.action}
-                    </div>
-                  )}
+            <div key={r.id} className="group flex items-start gap-3 border-t border-[#F1EFEA] px-5 py-4 first:border-0 hover:bg-[#FBFAF7]">
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <h3 className="text-[14px] font-semibold text-[#0E0D0A]">{r.title}</h3>
+                  <Badge variant={PV[r.priority]} className="capitalize">{r.priority}</Badge>
                 </div>
-                <button onClick={() => dismiss(r.id)} className="text-[#9B9890] hover:text-[#0E0D0A] flex-shrink-0"><X className="w-4 h-4"/></button>
+                <p className="text-[13.5px] text-[#5A5750]">{r.description}</p>
+                {r.action && (
+                  <p className="mt-2 text-[13px] text-[#2B2924]">
+                    <span className="text-[#8A877F]">Suggested next step: </span>{r.action}
+                  </p>
+                )}
               </div>
-            </Card>
+              <button onClick={() => dismiss(r.id)} aria-label={`Dismiss ${r.title}`}
+                className="shrink-0 rounded-[6px] p-1.5 text-[#8A877F] hover:bg-[#ECEAE4] hover:text-[#0E0D0A]">
+                <X className="h-4 w-4"/>
+              </button>
+            </div>
           ))}
-        </div>
+        </Card>
       )}
     </div>
   )

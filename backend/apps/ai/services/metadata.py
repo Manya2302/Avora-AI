@@ -133,8 +133,7 @@ def _save_tags(document_id: str, meta: dict, category: str):
     if meta.get('department'): tags.add(meta['department'])
     for kw in meta.get('keywords', [])[:5]:
         tags.add(kw.capitalize())
-    for tag in tags:
-        try:
-            DocumentTag.objects.get_or_create(document_id=document_id, tag=tag[:100])
-        except Exception:
-            pass
+    # One INSERT for all tags; existing (document_id, tag) pairs are skipped by the unique constraint
+    DocumentTag.objects.bulk_create(
+        [DocumentTag(document_id=document_id, tag=str(t)[:100]) for t in tags if str(t).strip()],
+        ignore_conflicts=True)

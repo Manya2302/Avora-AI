@@ -8,6 +8,7 @@ urlpatterns = [
     path("expiry/<uuid:pk>/dismiss/", views.DismissExpiryAlertView.as_view(),    name="compliance-dismiss"),
     path("audit-package/generate/",   views.GenerateAuditPackageView.as_view(),  name="compliance-audit-gen"),
     path("audit-packages/",           views.AuditPackageListView.as_view(),      name="compliance-audit-list"),
+    path("audit-packages/<uuid:pk>/download/", views.AuditPackageDownloadView.as_view(), name="compliance-audit-download"),
     path("copilot/",                  views.ComplianceCopilotView.as_view(),     name="compliance-copilot"),
     path("copilot/history/",          views.CopilotHistoryView.as_view(),        name="compliance-copilot-history"),
     path("timeline/",                 views.ComplianceTimelineView.as_view(),    name="compliance-timeline"),

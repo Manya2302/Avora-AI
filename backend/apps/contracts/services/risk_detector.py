@@ -28,7 +28,7 @@ def detect_risks(contract, text) -> list:
             
     # Integrate AI Compliance Risks directly into Contract Risks for a dynamic dashboard
     from apps.compliance.models import ComplianceRisk
-    ai_risks = ComplianceRisk.objects.filter(document_id=str(contract.document_id))
+    ai_risks = ComplianceRisk.objects.filter(document_id=str(contract.document_id), owner=contract.owner)
     for risk in ai_risks:
         r, new = ContractRisk.objects.get_or_create(
             contract=contract, title=risk.compliance_standard + " Risk",

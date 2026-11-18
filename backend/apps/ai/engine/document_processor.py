@@ -1,9 +1,26 @@
-"""Avora AI — Ensemble Document Processor (Phase 3)"""
-import io, re, logging
+"""
+Avora AI — Document Processor (v2: page-level, parallel, multimodal)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Public API is unchanged: AvoraDocumentProcessor().process(bytes, mime, name)
+returns an ExtractionResult with raw_text / clean_text / page_count / …
+
+New in v2 (consumed by apps.ai.services.ingestion):
+  result.pages    → per-page structure: text blocks (font size/bold), tables (markdown)
+  result.figures  → charts / graphs / images cropped as PNG with caption + inner text
+  result.stats    → timings, OCR page count, worker pool used
+
+What changed and why it is faster:
+  • PDFs are parsed ONCE with PyMuPDF (was: pdfplumber + PyMuPDF + PyPDF2 = 3 full parses;
+    pdfplumber alone is ~20-50x slower than PyMuPDF on 100+ page files).
+  • OCR runs only on pages without a usable text layer, ALL of them (was: first 2 pages
+    only, at 72 DPI — scanned page 3+ was silently lost), across a process pool.
+  • DOCX keeps heading styles and tables; XLSX keeps rows/headers as tables
+    (was: every cell joined with spaces, destroying structure).
+"""
+import io, os, re, time, logging, tempfile
 from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
-_PADDLE_OCR_INSTANCE = None
 
 @dataclass
 class ExtractionResult:
@@ -18,227 +35,231 @@ class ExtractionResult:
     tables: list = field(default_factory=list)
     key_value_pairs: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    pages: list = field(default_factory=list)
+    figures: list = field(default_factory=list)
+    stats: dict = field(default_factory=dict)
+
+
+def _pages_to_text(pages: list) -> str:
+    out = []
+    for p in pages:
+        parts = [b["text"] for b in p.get("blocks", [])]
+        parts += [t["markdown"] for t in p.get("tables", [])]
+        if parts:
+            out.append("\n".join(parts))
+    return "\n\n".join(out)
+
+
+def _finalize(r: ExtractionResult) -> ExtractionResult:
+    r.word_count = len(r.raw_text.split())
+    r.clean_text = TextCleaner.clean(r.raw_text)
+    r.key_value_pairs = KeyValueExtractor.extract(r.clean_text)
+    r.quality_score = QualityScorer.score(r.clean_text, r.confidence)
+    r.tables = [t["markdown"] for p in r.pages for t in p.get("tables", [])]
+    return r
+
 
 class AvoraDocumentProcessor:
-    """Ensemble: pdfplumber → PyMuPDF → PaddleOCR → Tesseract. Returns best result."""
+
+    def __init__(self, extract_figures: bool = True, progress_cb=None):
+        self.extract_figures = extract_figures
+        self.progress_cb = progress_cb
 
     def process(self, file_bytes: bytes, mime_type: str, filename: str = "") -> ExtractionResult:
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        if mime_type == "application/pdf" or ext == "pdf":
-            return self._pdf_ensemble(file_bytes)
-        elif ext in ("docx","doc"): return self._docx(file_bytes)
-        elif ext in ("xlsx","xls"): return self._excel(file_bytes)
-        elif mime_type.startswith("image/") or ext in ("png","jpg","jpeg","tiff"):
-            return self._image_ensemble(file_bytes)
-        else:
-            text = file_bytes.decode("utf-8", errors="replace")
-            r = ExtractionResult(raw_text=text, word_count=len(text.split()),
-                confidence=1.0, engine_used="plaintext", quality_score=1.0)
-            r.clean_text = TextCleaner.clean(text); return r
+        mime_type = mime_type or ""
+        if not file_bytes:
+            return ExtractionResult(warnings=["Empty file"])
+        try:
+            if mime_type == "application/pdf" or ext == "pdf":
+                return self._pdf(file_bytes)
+            if ext in ("docx", "doc") or "wordprocessingml" in mime_type or mime_type == "application/msword":
+                return self._docx(file_bytes)
+            if ext in ("xlsx", "xlsm", "xls") or "spreadsheetml" in mime_type:
+                return self._excel(file_bytes)
+            if mime_type.startswith("image/") or ext in ("png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp"):
+                return self._image(file_bytes, filename)
+        except Exception as e:
+            logger.exception(f"[DocProcessor] {ext or mime_type} extraction failed: {e}")
+        text = file_bytes.decode("utf-8", errors="replace")
+        r = ExtractionResult(raw_text=text, confidence=1.0, engine_used="plaintext",
+                             pages=[{"page": 1, "blocks": [{"type": "text", "text": l, "size": 0, "bold": False, "chars": len(l)}
+                                                           for l in text.split("\n") if l.strip()], "tables": []}])
+        return _finalize(r)
 
-    def _pdf_ensemble(self, fb):
-        results = []
-        for fn in (self._pdfplumber, self._pymupdf, self._pypdf2):
+    # ── PDF ───────────────────────────────────────────────────────────
+    def _pdf(self, fb: bytes) -> ExtractionResult:
+        from .page_extractor import extract_pdf, ExtractOptions
+        from .vision import vision_enabled
+        t0 = time.time()
+        vlm = vision_enabled()
+        opts = ExtractOptions(
+            extract_figures=self.extract_figures,
+            scanned_page_as_figure=self.extract_figures and vlm,
+            figure_ocr=self.extract_figures and not vlm and os.getenv("FIGURE_OCR", "0") == "1",
+            ocr_dpi=int(os.getenv("OCR_DPI", "0")),  # 0 = auto per engine
+        )
+        # Workers open the file by path: no 100 MB pickling per worker
+        fd, path = tempfile.mkstemp(suffix=".pdf", prefix="avora_")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(fb)
+            out = extract_pdf(path, opts, progress_cb=self.progress_cb)
+        finally:
             try:
-                r = fn(fb)
-                if r.word_count > 10:
-                    results.append(r)
-            except Exception as e:
-                logger.error(f"[Avora DocProcessor] {fn.__name__} failed: {e}")
+                os.remove(path)
+            except OSError:
+                pass
 
-        best = None
-        if results:
-            best = max(results, key=lambda x: (x.quality_score, x.word_count))
+        pages = out["pages"]
+        figures = [f for p in pages for f in p.pop("figures", [])]
+        # Logos/headers repeat on many pages with the same xref → not content
+        from collections import Counter
+        xref_pages = Counter(f["xref"] for f in figures if f.get("xref"))
+        figures = [f for f in figures if not (f.get("xref") and xref_pages[f["xref"]] >= 3)]
 
-        # Fall back to page-by-page OCR if no digital text or digital text is extremely sparse (e.g. scanned PDF)
-        if not best or best.word_count < 10:
-            logger.info("[Avora OCR] PDF has little or no digital text. Falling back to page-by-page OCR...")
-            try:
-                import fitz
-                doc = fitz.open(stream=fb, filetype="pdf")
-                page_texts = []
-                total_confidence = 0.0
-                pages_processed = 0
+        ocr_confs = [p["ocr_conf"] for p in pages if p.get("ocr_used") and p.get("ocr_conf") is not None]
+        digital = out["page_count"] - out["ocr_pages"]
+        conf = ((digital * 0.97) + sum(ocr_confs)) / max(digital + len(ocr_confs), 1)
+        engines = sorted({p["engine"] for p in pages if p.get("engine")})
 
-                for page_idx, page in enumerate(doc):
-                    if page_idx >= 10:  # limit to first 10 pages for performance safety
-                        break
-                    try:
-                        pix = page.get_pixmap(dpi=150)
-                        img_bytes = pix.tobytes("png")
-                        r_ocr = self._image_ensemble(img_bytes)
-                        if r_ocr.raw_text.strip():
-                            page_texts.append(r_ocr.raw_text)
-                            total_confidence += r_ocr.confidence
-                            pages_processed += 1
-                    except Exception as e_page:
-                        logger.warning(f"[Avora OCR] Error OCRing page {page_idx}: {e_page}")
+        r = ExtractionResult(raw_text=_pages_to_text(pages), page_count=out["page_count"],
+                             confidence=round(conf, 3), engine_used="+".join(engines)[:50] or "pymupdf",
+                             pages=pages, figures=figures)
+        r.stats = {"extract_ms": int((time.time() - t0) * 1000), "ocr_pages": out["ocr_pages"],
+                   "workers": out["workers"], "pool": out["pool"], "figures": len(figures)}
+        failed = [p["page"] for p in pages if p.get("engine") == "failed"]
+        if failed:
+            r.warnings.append(f"Pages failed to extract: {failed[:20]}")
+        logger.info(f"[DocProcessor] PDF {r.page_count}p in {r.stats['extract_ms']}ms "
+                    f"(ocr={out['ocr_pages']}, figs={len(figures)}, pool={out['pool']}x{out['workers']})")
+        return _finalize(r)
 
-                if page_texts:
-                    ocr_text = "\n\n".join(page_texts)
-                    avg_conf = total_confidence / pages_processed if pages_processed > 0 else 0.8
-                    best = ExtractionResult(
-                        raw_text=ocr_text,
-                        page_count=len(doc),
-                        word_count=len(ocr_text.split()),
-                        confidence=avg_conf,
-                        engine_used="pdf_page_ocr",
-                        quality_score=QualityScorer.score(ocr_text, avg_conf)
-                    )
-            except Exception as ocr_err:
-                logger.error(f"[Avora OCR] PDF page OCR fallback failed: {ocr_err}")
+    # ── Images (photo of a document, screenshot, or a chart image) ───
+    def _image(self, fb: bytes, filename: str) -> ExtractionResult:
+        from .ocr_engine import ocr_image_bytes
+        from .vision import vision_enabled
+        ocr = ocr_image_bytes(fb)
+        text = ocr.get("text", "")
+        pages = [{"page": 1, "blocks": [{"type": "text", "text": l, "size": 0, "bold": False, "chars": len(l)}
+                                        for l in text.split("\n") if l.strip()], "tables": [], "ocr_used": True}]
+        figures = []
+        if self.extract_figures and vision_enabled():
+            png = fb
+            try:  # normalise to PNG for the VLM
+                from PIL import Image
+                im = Image.open(io.BytesIO(fb)).convert("RGB")
+                im.thumbnail((2400, 2400))
+                buf = io.BytesIO(); im.save(buf, "PNG"); png = buf.getvalue()
+            except Exception:
+                pass
+            figures.append({"page": 1, "kind": "image_file", "xref": 0, "bbox": None,
+                            "caption": filename, "inner_text": text[:1200], "image_png": png})
+        r = ExtractionResult(raw_text=text, page_count=1, confidence=ocr.get("confidence", 0.0),
+                             engine_used=ocr.get("engine", "ocr"), pages=pages, figures=figures)
+        return _finalize(r)
 
-        if not best:
-            return ExtractionResult(warnings=["No text extracted"])
-
-        best.clean_text = TextCleaner.clean(best.raw_text)
-        best.key_value_pairs = KeyValueExtractor.extract(best.clean_text)
-        return best
-
-    def _pdfplumber(self, fb):
-        import pdfplumber
-        with pdfplumber.open(io.BytesIO(fb)) as pdf:
-            text = "\n\n".join(p.extract_text() or "" for p in pdf.pages)
-            wc   = len(text.split())
-            conf = 0.96 if wc > 100 else 0.70
-            return ExtractionResult(raw_text=text, page_count=len(pdf.pages),
-                word_count=wc, confidence=conf, engine_used="pdfplumber",
-                quality_score=QualityScorer.score(text, conf))
-
-    def _pymupdf(self, fb):
-        import fitz
-        doc  = fitz.open(stream=fb, filetype="pdf")
-        text = "\n\n".join(p.get_text() for p in doc)
-        wc   = len(text.split())
-        conf = 0.95 if wc > 50 else 0.60
-        return ExtractionResult(raw_text=text, page_count=len(doc),
-            word_count=wc, confidence=conf, engine_used="pymupdf",
-            quality_score=QualityScorer.score(text, conf))
-
-    def _pypdf2(self, fb):
-        import PyPDF2
-        reader = PyPDF2.PdfReader(io.BytesIO(fb))
-        text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-        wc = len(text.split())
-        conf = 0.90 if wc > 50 else 0.50
-        return ExtractionResult(raw_text=text, page_count=len(reader.pages),
-            word_count=wc, confidence=conf, engine_used="pypdf2",
-            quality_score=QualityScorer.score(text, conf))
-
-    def _image_ensemble(self, fb):
-        r = self._paddleocr(fb)
-        if r.quality_score >= 0.7:
-            r.clean_text = TextCleaner.clean(r.raw_text)
-            r.key_value_pairs = KeyValueExtractor.extract(r.clean_text)
-            return r
-        r2 = self._tesseract(fb)
-        best = r if r.quality_score >= r2.quality_score else r2
-        best.clean_text = TextCleaner.clean(best.raw_text)
-        best.key_value_pairs = KeyValueExtractor.extract(best.clean_text)
-        return best
-
-    def _paddleocr(self, fb):
-        global _PADDLE_OCR_INSTANCE
-        try:
-            import numpy as np, cv2
-            arr    = np.frombuffer(fb, np.uint8)
-            img    = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            img    = ImagePreprocessor.enhance(img)
-            
-            # Cache PaddleOCR instance to avoid loading weights on every page/call
-            if '_PADDLE_OCR_INSTANCE' not in globals() or globals()['_PADDLE_OCR_INSTANCE'] is None:
-                from paddleocr import PaddleOCR
-                globals()['_PADDLE_OCR_INSTANCE'] = PaddleOCR(use_angle_cls=True, lang="en")
-            
-            ocr = globals()['_PADDLE_OCR_INSTANCE']
-            result = ocr.ocr(img, cls=True)
-            if result and result[0]:
-                lines = [l[1][0] for l in result[0] if l]
-                confs = [l[1][1] for l in result[0] if l]
-                text  = "\n".join(lines)
-                avg   = sum(confs)/len(confs) if confs else 0.8
-                return ExtractionResult(raw_text=text, word_count=len(text.split()),
-                    confidence=round(avg,3), engine_used="paddleocr",
-                    quality_score=QualityScorer.score(text,avg))
-        except Exception as e:
-            logger.debug(f"[PaddleOCR] {e}")
-        return ExtractionResult(engine_used="paddleocr_failed")
-
-    def _tesseract(self, fb):
-        try:
-            import pytesseract
-            import numpy as np, cv2
-            from PIL import Image
-            arr   = np.frombuffer(fb, np.uint8)
-            img   = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            img   = ImagePreprocessor.enhance(img)
-            pil   = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            data  = pytesseract.image_to_data(pil, output_type=pytesseract.Output.DICT)
-            words = [w for w,c in zip(data["text"],data["conf"]) if w.strip() and int(c)>0]
-            confs = [int(c)/100 for c in data["conf"] if int(c)>0]
-            text  = " ".join(words)
-            avg   = sum(confs)/len(confs) if confs else 0.0
-            return ExtractionResult(raw_text=text, word_count=len(words),
-                confidence=round(avg,3), engine_used="tesseract",
-                quality_score=QualityScorer.score(text,avg))
-        except Exception as e:
-            logger.debug(f"[Tesseract] {e}")
-        return ExtractionResult(engine_used="tesseract_failed")
-
-    def _doc_fallback(self, fb):
-        # A simple fallback for legacy .doc files to extract text chunks using regex
-        try:
-            import re
-            # Extract printable strings from binary data
-            text_parts = re.findall(r"[\x20-\x7E\u00A0-\uFFFF]{4,}", fb.decode("utf-8", errors="ignore"))
-            clean_parts = []
-            for p in text_parts:
-                p_clean = p.strip()
-                # Filter out junk
-                if len(p_clean) > 8 and any(c.isalpha() for c in p_clean):
-                    clean_parts.append(p_clean)
-            text = "\n".join(clean_parts)
-            r = ExtractionResult(
-                raw_text=text,
-                word_count=len(text.split()),
-                confidence=0.5,
-                engine_used="doc_binary_extractor",
-                quality_score=QualityScorer.score(text, 0.5)
-            )
-            r.clean_text = TextCleaner.clean(text)
-            r.key_value_pairs = KeyValueExtractor.extract(r.clean_text)
-            return r
-        except Exception as e:
-            return ExtractionResult(engine_used="doc_fallback_failed", warnings=[str(e)])
-
-    def _docx(self, fb):
+    # ── DOCX ──────────────────────────────────────────────────────────
+    def _docx(self, fb: bytes) -> ExtractionResult:
         try:
             from docx import Document as D
-            doc   = D(io.BytesIO(fb))
-            text  = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
-            r     = ExtractionResult(raw_text=text, word_count=len(text.split()),
-                confidence=0.99, engine_used="python-docx",
-                quality_score=QualityScorer.score(text,0.99))
-            r.clean_text = TextCleaner.clean(text)
-            r.key_value_pairs = KeyValueExtractor.extract(r.clean_text)
-            return r
+            doc = D(io.BytesIO(fb))
         except Exception as e:
-            logger.info(f"[Avora Doc] python-docx failed, falling back to legacy .doc binary extractor: {e}")
+            logger.info(f"[DocProcessor] python-docx failed, legacy .doc extractor: {e}")
             return self._doc_fallback(fb)
 
-    def _excel(self, fb):
-        try:
-            import openpyxl
-            wb    = openpyxl.load_workbook(io.BytesIO(fb), data_only=True)
-            cells = [str(c) for ws in wb.worksheets for row in ws.iter_rows(values_only=True)
-                     for c in row if c is not None]
-            text  = " ".join(cells)
-            r     = ExtractionResult(raw_text=text, word_count=len(cells),
-                confidence=0.99, engine_used="openpyxl",
-                quality_score=QualityScorer.score(text,0.99))
-            r.clean_text = TextCleaner.clean(text); return r
-        except Exception as e:
-            return ExtractionResult(engine_used="excel_failed", warnings=[str(e)])
+        blocks, tables = [], []
+        # Walk body in document order so tables stay next to their paragraphs
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        for child in doc.element.body.iterchildren():
+            tag = child.tag.rsplit("}", 1)[-1]
+            if tag == "p":
+                p = Paragraph(child, doc)
+                t = p.text.strip()
+                if not t:
+                    continue
+                style = (p.style.name if p.style is not None else "") or ""
+                level = 0
+                m = re.match(r"(heading|title)\s*(\d*)", style, re.I)
+                if m:
+                    level = int(m.group(2) or 1)
+                blocks.append({"type": "text", "text": t, "chars": len(t),
+                               "size": {1: 20, 2: 16, 3: 14}.get(level, 12 if level == 0 else 13),
+                               "bold": level > 0 or all(r.bold for r in p.runs if r.text.strip())})
+            elif tag == "tbl":
+                tb = Table(child, doc)
+                rows = []
+                for row in tb.rows:
+                    cells = []
+                    for c in row.cells:
+                        v = c.text.replace("\n", " ").strip()
+                        if not cells or cells[-1] != v:   # merged cells repeat — dedupe
+                            cells.append(v)
+                    rows.append(cells)
+                if len(rows) >= 2:
+                    w = max(len(r) for r in rows)
+                    rows = [r + [""] * (w - len(r)) for r in rows]
+                    md = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * w] + ["| " + " | ".join(r) + " |" for r in rows[1:]]
+                    tables.append({"markdown": "\n".join(md)})
+        # Embedded pictures (charts pasted as images)
+        figures = []
+        if self.extract_figures:
+            from .vision import vision_enabled
+            if vision_enabled():
+                for rel in doc.part.rels.values():
+                    if "image" in rel.reltype:
+                        try:
+                            blob = rel.target_part.blob
+                            if len(blob) > 15_000:          # skip icons / bullets
+                                figures.append({"page": 1, "kind": "embedded_image", "xref": 0, "bbox": None,
+                                                "caption": "", "inner_text": "", "image_png": blob})
+                        except Exception:
+                            pass
+        pages = [{"page": 1, "blocks": blocks, "tables": tables}]
+        r = ExtractionResult(raw_text=_pages_to_text(pages), page_count=1, confidence=0.99,
+                             engine_used="python-docx", pages=pages, figures=figures[:40])
+        for p in r.pages:     # DOCX has no physical pages; avoid fake "page 1" citations
+            p["page"] = 0
+        for f in r.figures:
+            f["page"] = 0
+        return _finalize(r)
+
+    def _doc_fallback(self, fb):
+        text_parts = re.findall(r"[\x20-\x7E -￿]{4,}", fb.decode("utf-8", errors="ignore"))
+        text = "\n".join(p.strip() for p in text_parts if len(p.strip()) > 8 and any(c.isalpha() for c in p))
+        r = ExtractionResult(raw_text=text, confidence=0.5, engine_used="doc_binary_extractor",
+                             pages=[{"page": 0, "blocks": [{"type": "text", "text": l, "size": 0, "bold": False, "chars": len(l)}
+                                                           for l in text.split("\n")], "tables": []}])
+        return _finalize(r)
+
+    # ── Excel ─────────────────────────────────────────────────────────
+    def _excel(self, fb: bytes) -> ExtractionResult:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(fb), data_only=True, read_only=True)
+        pages = []
+        for si, ws in enumerate(wb.worksheets, start=1):
+            rows = []
+            for row in ws.iter_rows(values_only=True):
+                vals = ["" if v is None else str(v).replace("\n", " ").strip() for v in row]
+                if any(vals):
+                    rows.append(vals)
+                if len(rows) > 20000:
+                    break
+            if not rows:
+                continue
+            w = max(len(r) for r in rows)
+            # trim fully-empty trailing columns
+            while w > 1 and all((len(r) < w or not r[w - 1]) for r in rows):
+                w -= 1
+            rows = [(r + [""] * w)[:w] for r in rows]
+            md = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * w] + ["| " + " | ".join(r) + " |" for r in rows[1:]]
+            pages.append({"page": si,
+                          "blocks": [{"type": "text", "text": f"Sheet: {ws.title}", "size": 20, "bold": True, "chars": 10}],
+                          "tables": [{"markdown": "\n".join(md)}]})
+        r = ExtractionResult(raw_text=_pages_to_text(pages), page_count=len(pages), confidence=0.99,
+                             engine_used="openpyxl", pages=pages)
+        return _finalize(r)
 
 
 class ImagePreprocessor:
@@ -246,13 +267,43 @@ class ImagePreprocessor:
     def enhance(img):
         try:
             import cv2
+            import numpy as np
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            t    = cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,2)
-            d    = cv2.fastNlMeansDenoising(t, h=10)
-            h, w = d.shape[:2]
-            if w < 1000: d = cv2.resize(d,(w*2,h*2),interpolation=cv2.INTER_CUBIC)
-            return d
-        except: return img
+            
+            # --- Deskew (Rotation Alignment) ---
+            # Threshold to find text regions
+            thresh = cv2.bitwise_not(cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1])
+            coords = np.column_stack(np.where(thresh > 0))
+            if len(coords) > 0:
+                angle = cv2.minAreaRect(coords)[-1]
+                # Fix angle for cv2.minAreaRect behavior
+                if angle < -45:
+                    angle = -(90 + angle)
+                else:
+                    angle = -angle
+                
+                # Only rotate if the skew is significant
+                if abs(angle) > 0.5:
+                    (h, w) = img.shape[:2]
+                    center = (w // 2, h // 2)
+                    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+                    img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            # -----------------------------------
+
+            # Adaptive thresholding is usually enough for OCR.
+            # Removed fastNlMeansDenoising because it causes 10-30 second hangs per page.
+            t = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            
+            h, w = t.shape[:2]
+            if w < 1000: 
+                t = cv2.resize(t, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+            
+            # Convert back to 3-channel BGR so downstream tools (like cvtColor(BGR2RGB)) don't crash
+            return cv2.cvtColor(t, cv2.COLOR_GRAY2BGR)
+        except Exception as e: 
+            logger.debug(f"[ImagePreprocessor] Error: {e}")
+            return img
 
 
 class TextCleaner:

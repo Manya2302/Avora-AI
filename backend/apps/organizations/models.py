@@ -15,9 +15,39 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 
+# ── Organization (tenant boundary) ────────────────────────────
+class Organization(models.Model):
+    """A tenant. Departments, roles and members belong to exactly one organization;
+    directory data and organization-wide document access never cross this boundary."""
+    id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name       = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'org_organizations'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class _TenantDefaultMixin:
+    """Rows created without an organization (seed scripts, fixtures, legacy code paths)
+    join the default organization instead of falling outside every tenant."""
+    def save(self, *args, **kwargs):
+        if self.organization_id is None:
+            from .tenancy import default_organization
+            self.organization = default_organization()
+            if kwargs.get('update_fields') is not None:
+                kwargs['update_fields'] = set(kwargs['update_fields']) | {'organization'}
+        super().save(*args, **kwargs)
+
+
 # ── Department ────────────────────────────────────────────────
-class Department(models.Model):
+class Department(_TenantDefaultMixin, models.Model):
     id          = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(Organization, null=True, blank=True, on_delete=models.CASCADE,
+                                     related_name='departments')
     name        = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     parent      = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL,
@@ -36,13 +66,15 @@ class Department(models.Model):
 
 
 # ── OrgRole ───────────────────────────────────────────────────
-class OrgRole(models.Model):
+class OrgRole(_TenantDefaultMixin, models.Model):
     """Named hierarchical role.
     level 1 = highest authority (MD/CEO), level 10 = entry-level.
     Users at a lower numeric level can see documents from higher numeric levels
     if inherit_upward is True on the document.
     """
     id          = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(Organization, null=True, blank=True, on_delete=models.CASCADE,
+                                     related_name='roles')
     name        = models.CharField(max_length=100)       # e.g. "Finance Director"
     level       = models.PositiveIntegerField(default=5, help_text="1=highest, 10=lowest")
     department  = models.ForeignKey(Department, null=True, blank=True,
@@ -59,10 +91,12 @@ class OrgRole(models.Model):
 
 
 # ── OrgMember ─────────────────────────────────────────────────
-class OrgMember(models.Model):
+class OrgMember(_TenantDefaultMixin, models.Model):
     """Binds a user to a department and a role inside the organization."""
     id         = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user       = models.OneToOneField(User, on_delete=models.CASCADE, related_name='org_member')
+    organization = models.ForeignKey(Organization, null=True, blank=True, on_delete=models.SET_NULL,
+                                     related_name='members')
     department = models.ForeignKey(Department, on_delete=models.SET_NULL,
                                    null=True, blank=True, related_name='members')
     role       = models.ForeignKey(OrgRole, on_delete=models.SET_NULL,

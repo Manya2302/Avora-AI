@@ -1,17 +1,20 @@
 'use client'
 import { useEffect, useState, useRef, useMemo } from 'react'
 import dynamic from 'next/dynamic'
-import { Network, RefreshCw, Search, Building2, FileText, Users, FolderOpen } from 'lucide-react'
+import { Network, RefreshCw, Search, Building2, FileText, Users, FolderOpen, Link2 } from 'lucide-react'
 import { knowledgeApi } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/shared/Card'
 import Button from '@/components/shared/Button'
+import PageHeader from '@/components/shared/PageHeader'
+import EmptyState from '@/components/shared/EmptyState'
+import StatCard from '@/components/shared/StatCard'
 import type { KnowledgeGraphData } from '@/types'
 import toast from 'react-hot-toast'
 
 const TYPE_COLOR: Record<string,string> = {
-  vendor:'#D97706', customer:'#1A3DAF', employee:'#9333EA', contract:'#16A34A',
-  invoice:'#DC2626', certificate:'#0891B2', policy:'#7C3AED', department:'#65A30D',
-  project:'#EA580C', document:'#6B7280',
+  vendor:'#B45309', customer:'#1A3DAF', employee:'#7E22CE', contract:'#15803D',
+  invoice:'#B91C1C', certificate:'#0E7490', policy:'#2B2924', department:'#4D7C0F',
+  project:'#C2410C', document:'#8A877F',
 }
 const TYPE_ICON: Record<string,any> = { vendor:Building2, customer:Users, document:FileText, department:FolderOpen }
 
@@ -30,8 +33,8 @@ export default function KnowledgeExplorer() {
 
   const build = async () => {
     setBuilding(true)
-    try { await knowledgeApi.build(); toast.success('Knowledge graph rebuilt!'); load() }
-    catch { toast.error('Build failed.') } finally { setBuilding(false) }
+    try { await knowledgeApi.build(); toast.success('Knowledge map rebuilt.'); load() }
+    catch { toast.error('Couldn’t rebuild the map. Try again.') } finally { setBuilding(false) }
   }
 
   const graphData = useMemo(() => {
@@ -43,68 +46,51 @@ export default function KnowledgeExplorer() {
   }, [data])
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#EBF0FF] rounded-[11px] flex items-center justify-center"><Network className="w-5 h-5 text-[#1A3DAF]"/></div>
-          <div><h2 className="font-display text-2xl font-bold text-[#0E0D0A]">Knowledge Explorer</h2>
-            <p className="text-sm text-[#9B9890]">Organizational knowledge graph — vendors, contracts, invoices, and how they connect</p></div>
-        </div>
-        <Button size="sm" loading={building} onClick={build}><RefreshCw className="w-3.5 h-3.5"/> Rebuild Graph</Button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Knowledge map"
+        description="The vendors, customers, contracts and invoices Avora has found in your documents, and how they connect."
+        actions={<Button variant="ghost" size="sm" loading={building} onClick={build}><RefreshCw className="h-3.5 w-3.5" strokeWidth={1.75}/> Rebuild map</Button>}
+      />
 
       {data && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="p-3.5 bg-white border border-[#DDD9D0] rounded-[11px] text-center">
-            <p className="font-display text-2xl font-bold text-[#0E0D0A]">{data.stats.total_nodes}</p>
-            <p className="text-xs text-[#9B9890]">Total Entities</p>
-          </div>
-          <div className="p-3.5 bg-white border border-[#DDD9D0] rounded-[11px] text-center">
-            <p className="font-display text-2xl font-bold text-[#0E0D0A]">{data.stats.total_edges}</p>
-            <p className="text-xs text-[#9B9890]">Relationships</p>
-          </div>
-          <div className="p-3.5 bg-white border border-[#DDD9D0] rounded-[11px] text-center">
-            <p className="font-display text-2xl font-bold text-amber-600">{data.stats.by_type?.vendor||0}</p>
-            <p className="text-xs text-[#9B9890]">Vendors</p>
-          </div>
-          <div className="p-3.5 bg-white border border-[#DDD9D0] rounded-[11px] text-center">
-            <p className="font-display text-2xl font-bold text-[#1A3DAF]">{data.stats.by_type?.customer||0}</p>
-            <p className="text-xs text-[#9B9890]">Customers</p>
-          </div>
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StatCard label="Entities" value={data.stats.total_nodes} icon={<Network strokeWidth={1.75}/>} />
+          <StatCard label="Connections" value={data.stats.total_edges} icon={<Link2 strokeWidth={1.75}/>} />
+          <StatCard label="Vendors" value={data.stats.by_type?.vendor||0} icon={<Building2 strokeWidth={1.75}/>} accent="amber" />
+          <StatCard label="Customers" value={data.stats.by_type?.customer||0} icon={<Users strokeWidth={1.75}/>} />
         </div>
       )}
 
       <Card>
-        <CardHeader title="Graph Visualization" action={
-          <div className="flex gap-2 flex-wrap">
+        <CardHeader title="Map" subtitle="Drag to move around, scroll to zoom." action={
+          <div className="hidden flex-wrap justify-end gap-x-3 gap-y-1 md:flex">
             {Object.entries(TYPE_COLOR).slice(0,6).map(([t,c]) => (
-              <span key={t} className="flex items-center gap-1.5 text-[10px] font-mono text-[#9B9890]">
-                <span className="w-2 h-2 rounded-full" style={{background:c}}/>{t}
+              <span key={t} className="flex items-center gap-1.5 text-[12px] capitalize text-[#5A5750]">
+                <span className="h-1.5 w-1.5 rounded-full" style={{background:c}}/>{t}
               </span>
             ))}
           </div>
         }/>
         <CardBody>
-          {loading ? <div className="h-96 bg-[#F7F5F0] rounded-[11px] animate-pulse"/>
+          {loading ? <div className="h-96 animate-pulse rounded-[8px] bg-[#F1EFEA]"/>
           : !data || data.nodes.length === 0 ? (
-            <div className="text-center py-20">
-              <Network className="w-12 h-12 text-[#DDD9D0] mx-auto mb-4"/>
-              <p className="font-medium text-[#5A5750] mb-2">No knowledge graph yet</p>
-              <p className="text-sm text-[#9B9890] mb-5">Build the graph to visualize relationships between vendors, contracts, and documents.</p>
-              <Button onClick={build} loading={building}><RefreshCw className="w-4 h-4"/> Build Knowledge Graph</Button>
-            </div>
+            <EmptyState icon={<Network />} title="Nothing on the map yet"
+              action={<Button size="sm" onClick={build} loading={building}>Build the map</Button>}>
+              Avora reads your documents and links the vendors, customers and contracts it finds. Build the map to see them.
+            </EmptyState>
           ) : (
-            <div className="w-full h-[450px] bg-[#FAFAF8] rounded-[11px] overflow-hidden border border-[#ECEAE4]">
+            <div className="h-[450px] w-full overflow-hidden rounded-[8px] border border-[#ECEAE4] bg-[#FBFAF7]">
               <ForceGraph2D
-                ref={(fg: any) => {
+                ref={((fg: any) => {
                   if (fg) {
                     fg.d3Force('charge').strength(-400)
                     fg.d3Force('link').distance(120)
                   }
-                }}
+                }) as any}
                 graphData={graphData}
                 nodeLabel={() => ''} // disable default tooltip
-                linkColor={() => 'rgba(26,61,175,0.2)'}
+                linkColor={() => 'rgba(14,13,10,0.14)'}
                 linkWidth={1.5}
                 linkDirectionalArrowLength={4}
                 linkDirectionalArrowRelPos={1}
@@ -113,7 +99,7 @@ export default function KnowledgeExplorer() {
                 nodeCanvasObject={(node, ctx, globalScale) => {
                   const label = node.name.length > 30 ? node.name.substring(0,27) + '...' : node.name
                   const fontSize = 12 / globalScale
-                  ctx.font = `${fontSize}px Inter, sans-serif`
+                  ctx.font = `${fontSize}px 'IBM Plex Sans', sans-serif`
                   
                   const textWidth = ctx.measureText(label).width
                   const height = fontSize + (10 / globalScale)
@@ -124,7 +110,7 @@ export default function KnowledgeExplorer() {
                   const width = r + padding + (dotRadius * 2) + padding + textWidth + r
                   
                   const bckgDimensions = [width, height]
-                  const nodeColor = TYPE_COLOR[node.type] || '#9B9890'
+                  const nodeColor = TYPE_COLOR[node.type] || '#8A877F'
 
                   // Draw pill background
                   ctx.fillStyle = '#FFFFFF'
@@ -174,18 +160,16 @@ export default function KnowledgeExplorer() {
 
       {data && data.nodes.length > 0 && (
         <Card>
-          <CardHeader title="Entities by Type"/>
-          <CardBody>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-              {Object.entries(data.stats.by_type).filter(([,c]) => c>0).map(([type, count]) => (
-                <div key={type} className="flex items-center gap-2.5 p-2.5 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[9px]">
-                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{background:TYPE_COLOR[type]}}/>
-                  <span className="text-xs text-[#5A5750] capitalize flex-1">{type}</span>
-                  <span className="font-mono text-xs font-semibold text-[#0E0D0A]">{count}</span>
-                </div>
-              ))}
-            </div>
-          </CardBody>
+          <CardHeader title="Entities by type"/>
+          <div className="-mb-px grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4">
+            {Object.entries(data.stats.by_type).filter(([,c]) => c>0).map(([type, count]) => (
+              <div key={type} className="flex items-center gap-2.5 border-b border-[#F1EFEA] px-5 py-3">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{background:TYPE_COLOR[type]}}/>
+                <span className="flex-1 text-[13.5px] capitalize text-[#2B2924]">{type}</span>
+                <span className="text-[13.5px] font-medium tabular-nums text-[#0E0D0A]">{count}</span>
+              </div>
+            ))}
+          </div>
         </Card>
       )}
     </div>

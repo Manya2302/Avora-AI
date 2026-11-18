@@ -1,22 +1,61 @@
 'use client'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
-import { Shield, Lock } from 'lucide-react'
+import { ShieldCheck, KeyRound } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useAuthStore } from '@/store/authStore'
 import { usersApi } from '@/lib/api'
-import { getInitials, formatBytes } from '@/lib/utils'
+import { getInitials, formatBytes, formatDateTime } from '@/lib/utils'
 import Input from '@/components/shared/Input'
 import Button from '@/components/shared/Button'
-import { Card, CardHeader, CardBody } from '@/components/shared/Card'
+import { Card } from '@/components/shared/Card'
+import PageHeader from '@/components/shared/PageHeader'
+import Badge from '@/components/shared/Badge'
+
+const INDUSTRIES = [
+  { value: '', label: 'Not set' },
+  { value: 'law_firm', label: 'Law Firm' },
+  { value: 'ca_firm', label: 'CA / Accounting' },
+  { value: 'healthcare', label: 'Healthcare' },
+  { value: 'consulting', label: 'Consulting' },
+  { value: 'startup', label: 'Startup' },
+  { value: 'other', label: 'Other' },
+]
+
+interface AccountSummary {
+  document_count: number
+  encrypted_count: number
+  storage_bytes: number
+  member_since: string
+  last_sign_in: { at: string; ip_address: string; location: string; user_agent: string; is_current: boolean } | null
+}
+
+/** "Chrome on Windows" from a user-agent string; falls back to "Unknown browser". */
+function describeDevice(ua: string): string {
+  if (!ua) return 'Unknown browser'
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+    : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : null
+  const os = /Windows/.test(ua) ? 'Windows' : /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android'
+    : /Mac OS X|Macintosh/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : null
+  if (browser && os) return `${browser} on ${os}`
+  return browser || os || ua.slice(0, 40)
+}
 
 export default function ProfilePage() {
   const router = useRouter()
   const { user, fetchMe } = useAuthStore()
   const { register, handleSubmit, reset } = useForm()
 
+  const [summary, setSummary] = useState<AccountSummary | null>(null)
+  const [summaryFailed, setSummaryFailed] = useState(false)
+
   useEffect(() => { if (user) reset({ full_name: user.full_name, email: user.email, ...user.profile }) }, [user])
+  useEffect(() => {
+    usersApi.getSummary()
+      .then(({ data }) => setSummary(data))
+      .catch(() => setSummaryFailed(true))
+  }, [])
 
   const onSubmit = async (data: any) => {
     try {
@@ -29,135 +68,129 @@ export default function ProfilePage() {
     } catch { toast.error('Update failed.') }
   }
 
-  const storageUsed = user?.profile?.storage_used || 0
-  const storagePct  = Math.min((storageUsed / (500 * 1024 * 1024 * 1024)) * 100, 100)
+  const memberSince = summary?.member_since || user?.created_at
+  const encryptedPct = summary && summary.document_count > 0
+    ? `${Math.floor((summary.encrypted_count / summary.document_count) * 100)}%` : '—'
+  const last = summary?.last_sign_in
 
   return (
-    <div className="space-y-5 max-w-5xl">
-      {/* Hero */}
-      <div className="bg-[#0C0B09] rounded-[16px] p-8 relative overflow-hidden">
-        <div className="absolute bottom-0 left-0 w-72 h-72 bg-[#1A3DAF]/12 rounded-full blur-3xl -translate-x-1/2 translate-y-1/2 pointer-events-none" />
-        <div className="relative z-10 flex items-center gap-6 flex-wrap">
-          <div className="relative">
-            <div className="w-20 h-20 rounded-full bg-[#1A3DAF] flex items-center justify-center font-display text-3xl font-bold text-white border-2 border-white/10">
-              {getInitials(user?.full_name || 'U')}
+    <div className="space-y-6">
+      <PageHeader
+        title="Profile"
+        description="Your name and firm details, as your colleagues see them."
+        actions={<>
+          <Button variant="ghost" onClick={() => router.push('/profile/change-password')}>Change password</Button>
+          <Button onClick={handleSubmit(onSubmit)}>Save changes</Button>
+        </>}
+      />
+
+      {/* who you are */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-4 p-5">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#1A3DAF] text-[18px] font-medium text-white">
+            {getInitials(user?.full_name || 'U')}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[16px] font-semibold text-[#0E0D0A]">{user?.full_name}</p>
+            <p className="truncate text-[13.5px] text-[#5A5750]">{user?.email}</p>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant="blue" className="capitalize">{user?.profile?.plan || 'free'} plan</Badge>
+            <Badge variant="gray" className="capitalize">{user?.role}</Badge>
+            {user?.is_email_verified && <Badge variant="green">Email verified</Badge>}
+          </div>
+        </div>
+      </Card>
+
+      <Section title="Personal details" description="Shown on documents you upload and in the audit log.">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input label="Full name" autoComplete="name" {...register('full_name')} />
+            <Input label="Job title" placeholder="Managing partner" {...register('job_title')} />
+          </div>
+          <Input label="Email" type="email" {...register('email')} readOnly className="cursor-not-allowed bg-[#FBFAF7] text-[#5A5750]" hint="To change your email, contact support." />
+          <Input label="Phone" type="tel" autoComplete="tel" placeholder="+91 98765 43210" {...register('phone')} />
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="profile-bio" className="text-[13px] font-medium text-[#2B2924]">Bio</label>
+            <textarea id="profile-bio" {...register('bio')} rows={3} placeholder="A line or two about your role" className="field resize-none" />
+          </div>
+          <div className="flex justify-end">
+            <Button type="submit" variant="ghost">Save profile</Button>
+          </div>
+        </form>
+      </Section>
+
+      <Section title="Firm" description="Used to tailor compliance checks to your line of work.">
+        <div className="space-y-4">
+          <Input label="Company or firm name" placeholder="Sharma & Associates LLP" {...register('company_name')} />
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="profile-industry" className="text-[13px] font-medium text-[#2B2924]">Industry</label>
+            <select id="profile-industry" {...register('industry')} className="field h-10 py-0">
+              {INDUSTRIES.map(i => <option key={i.value} value={i.value}>{i.label}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input label="City" placeholder="Bengaluru" {...register('city')} />
+            <Input label="State" placeholder="Karnataka" {...register('state')} />
+          </div>
+          <Input label="Address" placeholder="42, MG Road" {...register('address')} />
+        </div>
+      </Section>
+
+      <Section title="Account" description={`You're on the ${user?.profile?.plan || 'free'} plan.`}>
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+          {[
+            { label: 'Documents', value: summary ? summary.document_count.toLocaleString('en-IN') : '—' },
+            { label: 'Storage', value: summary ? formatBytes(summary.storage_bytes) : '—' },
+            { label: 'Encrypted', value: encryptedPct },
+            { label: 'Member since', value: memberSince ? new Date(memberSince).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—' },
+          ].map(s => (
+            <div key={s.label}>
+              <dt className="text-[12.5px] text-[#8A877F]">{s.label}</dt>
+              <dd className="mt-1 font-display text-[22px] font-semibold leading-none tabular-nums text-[#0E0D0A]">{s.value}</dd>
             </div>
-          </div>
-          <div className="flex-1">
-            <h2 className="font-display text-2xl font-bold text-white/92">{user?.full_name}</h2>
-            <p className="font-mono text-sm text-white/40 mt-0.5">{user?.email}</p>
-            <div className="flex gap-2 mt-2.5 flex-wrap">
-              <span className="font-mono text-[9.5px] font-medium px-2 py-1 rounded-full bg-[#1A3DAF]/25 text-[#7B9FE8] border border-[#7B9FE8]/20 capitalize">{user?.profile?.plan || 'free'} Plan</span>
-              <span className="font-mono text-[9.5px] font-medium px-2 py-1 rounded-full bg-white/6 text-white/45 border border-white/10 capitalize">{user?.role}</span>
-              {user?.is_email_verified && <span className="font-mono text-[9.5px] font-medium px-2 py-1 rounded-full bg-green-900/30 text-green-400 border border-green-800/30">✓ Verified</span>}
+          ))}
+        </dl>
+        {summaryFailed && <p className="mt-4 text-[12.5px] text-[#8A877F]">Account figures couldn’t be loaded. Refresh the page to try again.</p>}
+      </Section>
+
+      <Section title="Security" description="How your account and documents are protected.">
+        <ul className="-my-3">
+          <li className="flex items-center gap-3 border-t border-[#F1EFEA] py-3 first:border-0">
+            <ShieldCheck className="h-4 w-4 shrink-0 text-[#15803D]" strokeWidth={1.75} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-medium text-[#0E0D0A]">Encryption on</p>
+              <p className="text-[12.5px] text-[#8A877F]">AES-256-GCM, applied to every document</p>
             </div>
-          </div>
-          <div className="flex gap-3">
-            <Button variant="ghost" size="sm" className="border-white/15 text-white/60 hover:bg-white/6 hover:text-white hover:border-white/25" onClick={() => router.push('/profile/change-password')}>Change Password</Button>
-            <Button size="sm" className="bg-white text-[#0E0D0A] border-white hover:bg-[#F7F5F0]" onClick={handleSubmit(onSubmit)}>Save Changes</Button>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-5">
-          <Card>
-            <CardHeader title="Personal Information" />
-            <CardBody>
-              <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <Input label="Full Name" {...register('full_name')} />
-                  <Input label="Job Title" placeholder="Managing Partner" {...register('job_title')} />
-                </div>
-                <Input label="Email Address" type="email" {...register('email')} readOnly className="opacity-60 cursor-not-allowed" hint="Contact support to change email." />
-                <Input label="Phone Number" placeholder="+91 98765 43210" {...register('phone')} />
-                <div>
-                  <label className="text-xs font-semibold text-[#0E0D0A] mb-1.5 block">Bio</label>
-                  <textarea {...register('bio')} rows={3} placeholder="Brief description…" className="w-full px-3 py-2.5 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light outline-none focus:border-[#1A3DAF] resize-none" />
-                </div>
-                <Button type="submit" className="w-full justify-center">Save Profile</Button>
-              </form>
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHeader title="Company Information" />
-            <CardBody>
-              <div className="space-y-4">
-                <Input label="Company / Firm Name" placeholder="Sharma & Associates LLP" {...register('company_name')} />
-                <div>
-                  <label className="text-xs font-semibold text-[#0E0D0A] mb-1.5 block">Industry</label>
-                  <select {...register('industry')} className="w-full px-3 py-2.5 bg-[#F7F5F0] border border-[#DDD9D0] rounded-[7px] text-sm font-light outline-none focus:border-[#1A3DAF]">
-                    {['Law Firm','CA / Accounting','Healthcare','Consulting','Startup','Other'].map(i => <option key={i}>{i}</option>)}
-                  </select>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <Input label="City" placeholder="Bengaluru" {...register('city')} />
-                  <Input label="State" placeholder="Karnataka" {...register('state')} />
-                </div>
-                <Input label="Address" placeholder="42, MG Road…" {...register('address')} />
-              </div>
-            </CardBody>
-          </Card>
-        </div>
-
-        <div className="space-y-5">
-          <Card>
-            <CardHeader title="Account Summary" />
-            <CardBody className="space-y-3">
-              <div className="grid grid-cols-2 gap-2.5">
-                {[
-                  { label: 'Documents', value: '1,284' },
-                  { label: 'Storage', value: formatBytes(storageUsed) },
-                  { label: 'Encrypted', value: '100%' },
-                  { label: 'Member Since', value: 'Jan 2026' },
-                ].map(s => (
-                  <div key={s.label} className="p-3 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[9px] text-center">
-                    <div className="font-display text-xl font-bold text-[#0E0D0A]">{s.value}</div>
-                    <div className="text-[11px] text-[#9B9890] mt-0.5">{s.label}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="p-3 bg-[#EBF0FF] border border-[#1A3DAF]/12 rounded-[9px]">
-                <div className="flex justify-between mb-1.5 text-xs">
-                  <span className="font-medium text-[#1A3DAF]">{user?.profile?.plan?.toUpperCase() || 'FREE'} Plan</span>
-                  <span className="font-mono text-[#1A3DAF]">{storagePct.toFixed(1)}% used</span>
-                </div>
-                <div className="h-1.5 bg-[#1A3DAF]/15 rounded-full overflow-hidden">
-                  <div className="h-full bg-[#1A3DAF] rounded-full" style={{ width: `${storagePct}%` }} />
-                </div>
-              </div>
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHeader title="Security Overview" />
-            <CardBody className="space-y-2.5">
-              <div className="flex items-center gap-2.5 p-3 bg-green-50 border border-green-100 rounded-[9px]">
-                <Shield className="w-4 h-4 text-green-600 flex-shrink-0" />
-                <div>
-                  <p className="text-xs font-semibold text-green-700">Encryption Active</p>
-                  <p className="text-[10px] font-mono text-green-600/70">AES-256-GCM · All documents</p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between p-3 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[9px]">
-                <div className="flex items-center gap-2">
-                  <Lock className="w-4 h-4 text-[#9B9890]" />
-                  <div>
-                    <p className="text-xs font-semibold text-[#0E0D0A]">Two-Factor Auth</p>
-                    <p className="text-[10px] text-[#9B9890]">Not enabled</p>
-                  </div>
-                </div>
-                <Button variant="ghost" size="sm" onClick={() => router.push('/settings')}>Enable</Button>
-              </div>
-              <div className="p-3 bg-[#F7F5F0] border border-[#ECEAE4] rounded-[9px]">
-                <p className="text-xs font-semibold text-[#0E0D0A] mb-0.5">Last Login</p>
-                <p className="text-[11px] font-mono text-[#9B9890]">Today · 09:01 AM · Bengaluru</p>
-              </div>
-            </CardBody>
-          </Card>
-        </div>
-      </div>
+          </li>
+          <li className="flex items-center gap-3 border-t border-[#F1EFEA] py-3 first:border-0">
+            <KeyRound className="h-4 w-4 shrink-0 text-[#8A877F]" strokeWidth={1.75} />
+            <div className="min-w-0 flex-1">
+              <p className="text-[14px] font-medium text-[#0E0D0A]">Last sign-in</p>
+              <p className="text-[12.5px] text-[#8A877F]">
+                {last
+                  ? <>{formatDateTime(last.at)}{last.is_current && ' (this session)'} · {describeDevice(last.user_agent)} · {last.location || <span className="font-mono text-[12px]">{last.ip_address}</span>}</>
+                  : summaryFailed ? 'Couldn’t be loaded' : summary ? 'No sign-ins recorded yet' : '—'}
+              </p>
+            </div>
+          </li>
+        </ul>
+      </Section>
     </div>
+  )
+}
+
+/** Settings-style section: what it is on the left, the controls on the right. Stacks on small screens. */
+function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+  return (
+    <Card>
+      <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,240px)_minmax(0,1fr)] md:gap-8">
+        <div>
+          <h3 className="text-[14px] font-semibold text-[#0E0D0A]">{title}</h3>
+          {description && <p className="mt-1 text-[13px] text-[#8A877F]">{description}</p>}
+        </div>
+        <div className="min-w-0">{children}</div>
+      </div>
+    </Card>
   )
 }

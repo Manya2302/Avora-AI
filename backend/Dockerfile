@@ -18,4 +18,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+ENV DJANGO_SETTINGS_MODULE=securevault.settings.production \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+RUN useradd --create-home --uid 1000 avora && chown -R avora /app
+USER avora
+
 EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://127.0.0.1:8000/api/health/ || exit 1
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "securevault.wsgi:application"]

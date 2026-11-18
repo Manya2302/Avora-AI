@@ -10,7 +10,7 @@ class ComplianceDashboardView(APIView):
         try:
             profile  = ComplianceProfile.objects.get(owner=request.user)
             industry = profile.industry
-        except:
+        except Exception:
             industry = "other"
         score_data   = compute_compliance_score(request.user, industry)
         expiry_count = ExpiryAlert.objects.filter(owner=request.user, is_dismissed=False).count()
@@ -51,7 +51,7 @@ class DismissExpiryAlertView(APIView):
             a = ExpiryAlert.objects.get(pk=pk, owner=request.user)
             a.is_dismissed = True; a.save()
             return Response({"message": "Alert dismissed."})
-        except: return Response(status=404)
+        except Exception: return Response(status=404)
 
 class GenerateAuditPackageView(APIView):
     def post(self, request):
@@ -63,6 +63,23 @@ class AuditPackageListView(generics.ListAPIView):
     serializer_class = AuditPackageSerializer
     def get_queryset(self):
         return AuditPackage.objects.filter(owner=self.request.user)
+
+class AuditPackageDownloadView(APIView):
+    """GET /api/compliance/audit-packages/<id>/download/ — ZIP of the package's documents + manifest."""
+    def get(self, request, pk):
+        from django.http import FileResponse
+        from apps.audit.models import AuditLog
+        from .services.audit_export import build_audit_package_zip
+        pkg = AuditPackage.objects.filter(pk=pk, owner=request.user).first()
+        if pkg is None:
+            return Response({"error": "Audit package not found."}, status=404)
+        if pkg.status != AuditPackage.Status.READY:
+            return Response({"error": "This package is not ready yet."}, status=409)
+        fobj, filename, included = build_audit_package_zip(pkg, request.user)
+        for d in included:
+            AuditLog.log(request, "download", document_id=d["document_id"], resource=d["name"],
+                         extra_data={"via": "audit_package", "package_id": str(pkg.id)})
+        return FileResponse(fobj, as_attachment=True, filename=filename, content_type="application/zip")
 
 class ComplianceCopilotView(APIView):
     def post(self, request):
@@ -83,18 +100,29 @@ class ComplianceTimelineView(generics.ListAPIView):
 
 class RecordCorrectionView(APIView):
     def post(self, request):
+        import logging
+        from apps.documents.models import Document
+        document_id = str(request.data.get("document_id", ""))[:64]
+        # Only corrections on your own documents may feed the training data
+        try:
+            owned = Document.objects.filter(id=document_id, owner=request.user, is_deleted=False).exists()
+        except Exception:
+            owned = False
+        if not owned:
+            return Response({"error": "Document not found."}, status=404)
         try:
             from apps.ai.engine.training_pipeline import AvoraTrainingPipeline
             AvoraTrainingPipeline().record_correction(
-                document_id=request.data.get("document_id",""),
-                field=request.data.get("field",""),
-                ai_value=request.data.get("ai_value",""),
-                human_value=request.data.get("human_value",""),
-                doc_text_snippet=request.data.get("text_snippet",""),
+                document_id=document_id,
+                field=str(request.data.get("field", ""))[:100],
+                ai_value=str(request.data.get("ai_value", ""))[:2000],
+                human_value=str(request.data.get("human_value", ""))[:2000],
+                doc_text_snippet=str(request.data.get("text_snippet", ""))[:4000],
                 owner_id=str(request.user.id),
             )
-        except Exception as e:
-            pass
+        except Exception:
+            logging.getLogger(__name__).exception("[Compliance] record_correction failed")
+            return Response({"error": "Could not record correction."}, status=500)
         return Response({"message": "Correction recorded. Thank you for improving Avora AI!"})
 
 class DismissRiskView(APIView):
@@ -104,7 +132,7 @@ class DismissRiskView(APIView):
             r = ComplianceRisk.objects.get(pk=pk, owner=request.user)
             r.is_resolved = True; r.save()
             return Response({"message": "Risk dismissed."})
-        except: return Response(status=404)
+        except Exception: return Response(status=404)
 
 class DismissFactView(APIView):
     def patch(self, request, pk):
@@ -113,4 +141,4 @@ class DismissFactView(APIView):
             f = ComplianceCheckResult.objects.get(pk=pk, owner=request.user)
             f.is_ignored = True; f.save()
             return Response({"message": "Check ignored."})
-        except: return Response(status=404)
+        except Exception: return Response(status=404)

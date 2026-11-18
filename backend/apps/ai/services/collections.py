@@ -51,15 +51,19 @@ def assign_document_to_collections(document_id: str, owner_id: str, category: st
             category_filter=category,
             is_auto_updated=True,
         )
-        for col in collections:
-            SmartCollectionDocument.objects.get_or_create(
-                collection=col, document_id=document_id,
-                defaults={'relevance': 1.0}
-            )
-            SmartCollection.objects.filter(pk=col.pk).update(
-                document_count=SmartCollectionDocument.objects.filter(collection=col).count()
-            )
-        logger.info(f"[Avora Collections] doc {document_id} → {collections.count()} collections")
+        cols = list(collections)
+        if cols:
+            SmartCollectionDocument.objects.bulk_create(
+                [SmartCollectionDocument(collection=c, document_id=document_id, relevance=1.0) for c in cols],
+                ignore_conflicts=True)
+            # Recount with one correlated subquery instead of one COUNT per collection
+            from django.db.models import Count, OuterRef, Subquery, IntegerField
+            from django.db.models.functions import Coalesce
+            counts = (SmartCollectionDocument.objects.filter(collection=OuterRef('pk'))
+                      .values('collection').annotate(c=Count('id')).values('c'))
+            SmartCollection.objects.filter(pk__in=[c.pk for c in cols]).update(
+                document_count=Coalesce(Subquery(counts, output_field=IntegerField()), 0))
+        logger.info(f"[Avora Collections] doc {document_id} → {len(cols)} collections")
     except Exception as e:
         logger.error(f"[Avora Collections] Error: {e}")
 

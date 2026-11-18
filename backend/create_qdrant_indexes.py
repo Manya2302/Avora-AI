@@ -40,10 +40,13 @@ KEYWORD_FIELDS = [
     "original_name",
     "file_type",
     "department",
+    "embed_model",
+    "chunk_type",
 ]
 
 INTEGER_FIELDS = [
     "chunk_index",
+    "page_start",
 ]
 
 def main():
